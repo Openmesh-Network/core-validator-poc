@@ -1,6 +1,7 @@
 # Dependencies
 
 https://go.dev/doc/install (to build tendermint)
+https://docs.docker.com/engine/install/ (to run the abci app and the tendermint nodes)
 
 # Commands
 
@@ -30,6 +31,12 @@ sudo make start
 curl http://localhost:26657/broadcast_tx_commit?tx=0x00
 ```
 
-### Tendermints docs
+### Get current state
 
-https://docs.tendermint.com/v0.34/tendermint-core/using-tendermint.html#transactions
+```
+curl http://localhost:26657/abci_info
+```
+
+### Tendermint rpc docs
+
+https://docs.tendermint.com/v0.34/rpc/#/
