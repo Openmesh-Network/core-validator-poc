@@ -1,5 +1,5 @@
 install:
-	make --directory=./tendermint build-linux
+	make --directory=./tendermint build
 .PHONY: install
 
 update:
