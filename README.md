@@ -1,20 +1,11 @@
-# In xnode-app repo:
-
-## To update:
-
-sudo docker build --tag tendermint-app .
-
-# In tendermint repo:
-
 ## Once:
 
-make build-linux
+make install
 
 ## To update:
 
-sudo rm -rf ./build/node\*
-sudo make build-docker-localnode
+sudo make update
 
 ## To start:
 
-sudo make localnet-start
+sudo make start
