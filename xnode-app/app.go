@@ -120,8 +120,11 @@ func (app *Application) Query(reqQuery types.RequestQuery) types.ResponseQuery {
 
 func (app *Application) BeginBlock(req types.RequestBeginBlock) types.ResponseBeginBlock {
 	app.pendingBlockRewards = make([]types.ValidatorUpdate, 0)//len(req.LastCommitInfo.Votes))
+	// Scaling factor should not be 2, but 1.00001 or something (should do some calculations on block time for target APY)
+	// Code commentend out for now, as tendermint gives me addresses of validators here, but I need their public key to update them
+	// I assume these validators are stored somewhere, or alternitavely we need to add and track it in the application storage instead
 	// for i := 0; i < len(req.LastCommitInfo.Votes); i++ {
-	// 	app.pendingBlockRewards[i] = types.UpdateValidator(req.LastCommitInfo.Votes[i].Validator.Address, req.LastCommitInfo.Votes[i].Validator.Power*2, "")
+	// 	app.pendingBlockRewards[i] = types.Ed25519ValidatorUpdate(req.LastCommitInfo.Votes[i].Validator.Address, req.LastCommitInfo.Votes[i].Validator.Power*2)
 	// }
 	return types.ResponseBeginBlock{}
 }
