@@ -1,3 +1,9 @@
+# Dependencies
+
+https://go.dev/doc/install (to build tendermint)
+
+# Commands
+
 ## Once:
 
 ```
