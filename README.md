@@ -3,6 +3,10 @@
 https://go.dev/doc/install (to build tendermint)  
 https://docs.docker.com/engine/install/ (to run the abci app and the tendermint nodes)  
 
+# Development
+
+It is recommended to open the xnode-app folder in your preferred editor for GO projects. Opening this root folder instead might give errors in your IDE that its an invalid GO project.
+
 # Commands
 
 ## Once:
