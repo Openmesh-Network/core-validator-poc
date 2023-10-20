@@ -1,7 +1,7 @@
 # Dependencies
 
-https://go.dev/doc/install (to build tendermint)
-https://docs.docker.com/engine/install/ (to run the abci app and the tendermint nodes)
+https://go.dev/doc/install (to build tendermint)  
+https://docs.docker.com/engine/install/ (to run the abci app and the tendermint nodes)  
 
 # Commands
 
