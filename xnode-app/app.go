@@ -4,25 +4,66 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/tendermint/tendermint/abci/example/code"
 	"github.com/tendermint/tendermint/abci/server"
 	"github.com/tendermint/tendermint/abci/types"
 	"github.com/tendermint/tendermint/libs/log"
-
 	tmos "github.com/tendermint/tendermint/libs/os"
+
+	"flag"
+	"net/http"
+
+	"github.com/gorilla/websocket"
+)
+
+const (
+	CodeTypeOK            uint32 = 0
+	CodeTypeEncodingError uint32 = 1
+	CodeTypeDataInvalid   uint32 = 2
+	CodeTypeDataOutdated  uint32 = 3
+	CodeTypeUnknownError  uint32 = 4
 )
 
 type Application struct {
 	types.BaseApplication
 
 	pendingBlockRewards []types.ValidatorUpdate // Also includes slashing
-	hashCount int
-	txCount   int
-	serial    bool
+	binanceBTCUSDT uint32
+	binanceBTCUSDTTimestamp uint64
+
+	totalTransactions uint32
+}
+var binanceBTCUSDTAtTimestamp = make(map[uint64]uint32) // Verfied data from our xnode
+
+var addr = flag.String("addr", "0.0.0.0:8088", "receiving xnode data")
+
+var upgrader = websocket.Upgrader{} // use default options
+
+func (app *Application) receiveBinanceData(w http.ResponseWriter, r *http.Request) {
+	c, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Print("upgrade:", err)
+		return
+	}
+	defer c.Close()
+	for {
+		_, message, err := c.ReadMessage()
+		if err != nil {
+			fmt.Println("read:", err)
+			break
+		}
+		binanceBTCUSDTBytes := make([]byte, 4)
+		binanceBTCUSDTTimestampBytes := make([]byte, 8)
+		copy(binanceBTCUSDTBytes, message[0:4])
+		copy(binanceBTCUSDTTimestampBytes, message[4:12])
+		verifiedBinanceBTCUSDT := binary.BigEndian.Uint32(binanceBTCUSDTBytes)
+		verifiedBinanceBTCUSDTTimestamp := binary.BigEndian.Uint64(binanceBTCUSDTTimestampBytes)
+		binanceBTCUSDTAtTimestamp[verifiedBinanceBTCUSDTTimestamp] = verifiedBinanceBTCUSDT
+		fmt.Println("Verified price added:", verifiedBinanceBTCUSDT, "at", verifiedBinanceBTCUSDTTimestamp)
+	}
 }
 
 func main() {
-	app := NewApplication(true)
+	app := NewApplication()
 	logger, err := log.NewDefaultLogger("text", "debug", true)
 	if err != nil {
 		fmt.Println(err)
@@ -46,75 +87,99 @@ func main() {
 		}
 	})
 
+	flag.Parse()
+	http.HandleFunc("/", app.receiveBinanceData)
+	fmt.Println(http.ListenAndServe(*addr, nil))
+
 	// Run forever.
 	select {}
 }
 
-func NewApplication(serial bool) *Application {
-	return &Application{serial: serial}
+func NewApplication() *Application {
+	return &Application{}
 }
 
 func (app *Application) Info(req types.RequestInfo) types.ResponseInfo {
-	return types.ResponseInfo{Data: fmt.Sprintf("{\"hashes\":%v,\"txs\":%v}", app.hashCount, app.txCount)}
+	return types.ResponseInfo{Data: fmt.Sprintf("{\"BTCUSDT\":%v,\"lastUpdate\":%v,\"totalUpdates\":%v}", app.binanceBTCUSDT, app.binanceBTCUSDTTimestamp, app.totalTransactions)}
+}
+
+func (app *Application) VerifyData(tx []byte) (uint32, uint64, uint32) {
+	binanceBTCUSDTBytes := make([]byte, 4)
+	binanceBTCUSDTTimestampBytes := make([]byte, 8)
+	copy(binanceBTCUSDTBytes, tx[0:4])
+	copy(binanceBTCUSDTTimestampBytes, tx[4:12])
+	reqBinanceBTCUSDT := binary.BigEndian.Uint32(binanceBTCUSDTBytes)
+	reqBinanceBTCUSDTTimestamp := binary.BigEndian.Uint64(binanceBTCUSDTTimestampBytes)
+	if reqBinanceBTCUSDTTimestamp <= app.binanceBTCUSDTTimestamp {
+		return 0, 0, CodeTypeDataOutdated
+	}
+	if (binanceBTCUSDTAtTimestamp[reqBinanceBTCUSDTTimestamp] != reqBinanceBTCUSDT) {
+		fmt.Println(binanceBTCUSDTAtTimestamp[reqBinanceBTCUSDTTimestamp], "vs", reqBinanceBTCUSDT, "at", reqBinanceBTCUSDTTimestamp)
+		return 0, 0, CodeTypeDataInvalid
+	}
+	return reqBinanceBTCUSDT, reqBinanceBTCUSDTTimestamp, 0
 }
 
 func (app *Application) DeliverTx(req types.RequestDeliverTx) types.ResponseDeliverTx {
-	if app.serial {
-		if len(req.Tx) > 8 {
-			return types.ResponseDeliverTx{
-				Code: code.CodeTypeEncodingError,
-				Log:  fmt.Sprintf("Max tx size is 8 bytes, got %d", len(req.Tx))}
-		}
-		tx8 := make([]byte, 8)
-		copy(tx8[len(tx8)-len(req.Tx):], req.Tx)
-		txValue := binary.BigEndian.Uint64(tx8)
-		if txValue != uint64(app.txCount) {
-			return types.ResponseDeliverTx{
-				Code: code.CodeTypeBadNonce,
-				Log:  fmt.Sprintf("Invalid nonce. Expected %v, got %v", app.txCount, txValue)}
+	if len(req.Tx) != 12 {
+		return types.ResponseDeliverTx{
+			Code: CodeTypeEncodingError,
+			Log:  fmt.Sprintf("Expected tx size is 12 bytes, got %d", len(req.Tx)),
 		}
 	}
-	app.txCount++
-	return types.ResponseDeliverTx{Code: code.CodeTypeOK}
+	price, time, responseCode := app.VerifyData(req.Tx)
+	if responseCode != 0 {
+		return types.ResponseDeliverTx{
+			Code: responseCode,
+			Log:  "Data verification returned false",
+		}
+	}
+	app.binanceBTCUSDT = price
+	app.binanceBTCUSDTTimestamp = time
+	app.totalTransactions++
+	events := make([]types.Event, 1)
+	events[0] = types.Event{Type: "binanceUSDT", Attributes: make([]types.EventAttribute, 2)}
+	events[0].Attributes[0] = types.EventAttribute{Key: "price", Value: fmt.Sprintf("%v", app.binanceBTCUSDT)}
+	events[0].Attributes[1] = types.EventAttribute{Key: "timestamp", Value: fmt.Sprintf("%v", app.binanceBTCUSDTTimestamp)}
+	return types.ResponseDeliverTx{Code: CodeTypeOK, Events: events}
 }
 
 func (app *Application) CheckTx(req types.RequestCheckTx) types.ResponseCheckTx {
-	if app.serial {
-		if len(req.Tx) > 8 {
-			return types.ResponseCheckTx{
-				Code: code.CodeTypeEncodingError,
-				Log:  fmt.Sprintf("Max tx size is 8 bytes, got %d", len(req.Tx))}
-		}
-		tx8 := make([]byte, 8)
-		copy(tx8[len(tx8)-len(req.Tx):], req.Tx)
-		txValue := binary.BigEndian.Uint64(tx8)
-		if txValue < uint64(app.txCount) {
-			return types.ResponseCheckTx{
-				Code: code.CodeTypeBadNonce,
-				Log:  fmt.Sprintf("Invalid nonce. Expected >= %v, got %v", app.txCount, txValue)}
+	if len(req.Tx) != 12 {
+		return types.ResponseCheckTx{
+			Code: CodeTypeEncodingError,
+			Log:  fmt.Sprintf("Expected tx size is 12 bytes, got %d", len(req.Tx)),
 		}
 	}
-	return types.ResponseCheckTx{Code: code.CodeTypeOK}
+	_, _, responseCode := app.VerifyData(req.Tx)
+	if responseCode != 0 {
+		return types.ResponseCheckTx{
+			Code: responseCode,
+			Log:  "Data verification returned false",
+		}
+	}
+	return types.ResponseCheckTx{Code: CodeTypeOK}
 }
 
 func (app *Application) Commit() (resp types.ResponseCommit) {
-	app.hashCount++
-	if app.txCount == 0 {
+	if app.totalTransactions == 0 {
 		return types.ResponseCommit{}
 	}
 	hash := make([]byte, 8)
-	binary.BigEndian.PutUint64(hash, uint64(app.txCount))
+	binary.BigEndian.PutUint64(hash, uint64(app.totalTransactions))
 	return types.ResponseCommit{Data: hash}
 }
 
 func (app *Application) Query(reqQuery types.RequestQuery) types.ResponseQuery {
 	switch reqQuery.Path {
-	case "hash":
-		return types.ResponseQuery{Value: []byte(fmt.Sprintf("%v", app.hashCount))}
+	case "price":
+		return types.ResponseQuery{Value: []byte(fmt.Sprintf("%v", app.binanceBTCUSDT))}
+	case "time":
+		return types.ResponseQuery{Value: []byte(fmt.Sprintf("%v", app.binanceBTCUSDTTimestamp))}
 	case "tx":
-		return types.ResponseQuery{Value: []byte(fmt.Sprintf("%v", app.txCount))}
+		return types.ResponseQuery{Value: []byte(fmt.Sprintf("%v", app.totalTransactions))}
 	default:
-		return types.ResponseQuery{Log: fmt.Sprintf("Invalid query path. Expected hash or tx, got %v", reqQuery.Path)}
+		return types.ResponseQuery{Log: fmt.Sprintf("Invalid query path. Expected price, time or tx, got %v", reqQuery.Path)}
 	}
 }
 

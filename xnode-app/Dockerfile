@@ -3,7 +3,7 @@
 FROM golang:1.21
 
 # Set destination for COPY
-WORKDIR /home/plopmenz/xnode
+WORKDIR /home/plopmenz/xnode-validator/xnode-app
 
 # Download Go modules
 COPY go.mod go.sum ./
@@ -22,6 +22,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /tendermint-app
 # the application is going to listen on by default.
 # https://docs.docker.com/engine/reference/builder/#expose
 EXPOSE 26658
+EXPOSE 8088
 
 # Run
 CMD ["/tendermint-app"]
