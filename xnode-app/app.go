@@ -1,11 +1,18 @@
 package main
 
 import (
+	b64 "encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"os"
+	"strconv"
 
 	"github.com/tendermint/tendermint/abci/server"
 	"github.com/tendermint/tendermint/abci/types"
+	"github.com/tendermint/tendermint/crypto"
+	"github.com/tendermint/tendermint/crypto/ed25519"
+	"github.com/tendermint/tendermint/libs/bytes"
 	"github.com/tendermint/tendermint/libs/log"
 	tmos "github.com/tendermint/tendermint/libs/os"
 
@@ -23,9 +30,16 @@ const (
 	CodeTypeUnknownError  uint32 = 4
 )
 
+type AbciValidator struct {
+	PubKey crypto.PubKey
+	GovernancePower int64 // Staked tokens, can be unstaked
+	Tokens int64 // Free tokens, can be withdrawn or staked
+}
+
 type Application struct {
 	types.BaseApplication
 
+	validators map[string]AbciValidator
 	pendingBlockRewards []types.ValidatorUpdate // Also includes slashing
 	binanceBTCUSDT uint32
 	binanceBTCUSDTTimestamp uint64
@@ -38,7 +52,7 @@ var addr = flag.String("addr", "0.0.0.0:8088", "receiving xnode data")
 
 var upgrader = websocket.Upgrader{} // use default options
 
-func (app *Application) receiveBinanceData(w http.ResponseWriter, r *http.Request) {
+func receiveBinanceData(w http.ResponseWriter, r *http.Request) {
 	c, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		fmt.Print("upgrade:", err)
@@ -62,11 +76,39 @@ func (app *Application) receiveBinanceData(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+type ConfigFile struct {
+    Validators []ConfigValidator `json:"validators"`
+}
+
+type ConfigValidator struct {
+    Address string `json:"address"`
+	PubKey ConfigPubKey `json:"pub_key"`
+	Power string `json:"power"`
+}
+
+type ConfigPubKey struct {
+	Type string `json:"type"`
+	Value string `json:"value"`
+}
+
 func main() {
-	app := NewApplication()
+	// Needed for the intial validators
+	configFile := "/tendermint/" + os.Args[1]
+	configFileContent, err := os.ReadFile(configFile)
+	if err != nil {
+		fmt.Println("Error while reading config file", "err", err)
+	}
+
+	config := &ConfigFile{}
+    err = json.Unmarshal(configFileContent, config)
+	if err != nil {
+		fmt.Println("Error while parsing config file json", "err", err)
+	}
+
+	app := NewApplication(*config)
 	logger, err := log.NewDefaultLogger("text", "debug", true)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println("Error while creating logger", "err", err)
 	}
 
 	// Start the listener
@@ -88,15 +130,36 @@ func main() {
 	})
 
 	flag.Parse()
-	http.HandleFunc("/", app.receiveBinanceData)
+	http.HandleFunc("/", receiveBinanceData)
 	fmt.Println(http.ListenAndServe(*addr, nil))
 
 	// Run forever.
 	select {}
 }
 
-func NewApplication() *Application {
-	return &Application{}
+func NewApplication(config ConfigFile) *Application {
+	validators := make(map[string]AbciValidator)
+	for i := 0; i < len(config.Validators); i++ {
+		powerAsInt, err := strconv.ParseInt(config.Validators[i].Power, 10, 64)
+		if err != nil {
+			panic(err)
+		}
+		
+		pkBytes, err := b64.StdEncoding.DecodeString(config.Validators[i].PubKey.Value)
+		if err != nil {
+			panic(err)
+		}
+		pk := ed25519.PubKey(pkBytes)
+		if pk.Address().String() != config.Validators[i].Address {
+			fmt.Println("Calculated address of public key does not match given address", pk.Address().String(), config.Validators[i].Address)
+		}
+		validators[config.Validators[i].Address] = AbciValidator{
+			PubKey: pk,
+			GovernancePower: powerAsInt,
+			Tokens: 0,
+		}
+	}
+	return &Application{validators: validators}
 }
 
 func (app *Application) Info(req types.RequestInfo) types.ResponseInfo {
@@ -184,13 +247,31 @@ func (app *Application) Query(reqQuery types.RequestQuery) types.ResponseQuery {
 }
 
 func (app *Application) BeginBlock(req types.RequestBeginBlock) types.ResponseBeginBlock {
-	app.pendingBlockRewards = make([]types.ValidatorUpdate, 0)//len(req.LastCommitInfo.Votes))
-	// Scaling factor should not be 2, but 1.00001 or something (should do some calculations on block time for target APY)
-	// Code commentend out for now, as tendermint gives me addresses of validators here, but I need their public key to update them
-	// I assume these validators are stored somewhere, or alternitavely we need to add and track it in the application storage instead
-	// for i := 0; i < len(req.LastCommitInfo.Votes); i++ {
-	// 	app.pendingBlockRewards[i] = types.Ed25519ValidatorUpdate(req.LastCommitInfo.Votes[i].Validator.Address, req.LastCommitInfo.Votes[i].Validator.Power*2)
-	// }
+	// This assumes all punished validators are still validating though!
+	app.pendingBlockRewards = make([]types.ValidatorUpdate, len(req.LastCommitInfo.Votes) + len(req.ByzantineValidators))
+	for i := 0; i < len(req.LastCommitInfo.Votes); i++ {
+		address := bytes.HexBytes(req.LastCommitInfo.Votes[i].Validator.Address).String()
+		validator := app.validators[address]
+
+		// This should be changed to be dependant on your stake
+		validator.GovernancePower += 1
+		app.pendingBlockRewards[i] = types.Ed25519ValidatorUpdate(validator.PubKey.Bytes(), validator.GovernancePower)
+
+		app.validators[address] = validator
+	}
+	for i := 0; i < len(req.ByzantineValidators); i++ {
+		address := bytes.HexBytes(req.ByzantineValidators[i].Validator.Address).String()
+		validator := app.validators[address]
+
+		// Check if it's not going bellow 0
+		// Can a validator withdrawl their governance power before the evidence against their actions is finalized to prevent punishment?
+		// This should be changed to be dependant on your stake
+		validator.GovernancePower -= 1
+		// If their GovernancePower is bellow the threshold, move all to tokens and give them GovernancePower 0
+		app.pendingBlockRewards[len(req.LastCommitInfo.Votes)+i] = types.Ed25519ValidatorUpdate(validator.PubKey.Bytes(), validator.GovernancePower)
+
+		app.validators[address] = validator
+	}
 	return types.ResponseBeginBlock{}
 }
 
