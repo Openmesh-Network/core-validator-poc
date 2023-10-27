@@ -36,6 +36,7 @@ const (
 type AbciValidator struct {
 	PubKey crypto.PubKey
 	GovernancePower int64 // Staked tokens, can be unstaked
+	// Tokens has 9 decimals (so * 10^9 to convert to blockchain tokens, / 10*9 to convert to blockchain coins)
 	Tokens int64 // Unstaked tokens, can be withdrawn or staked
 }
 
@@ -346,8 +347,7 @@ func (app *Application) BeginBlock(req types.RequestBeginBlock) types.ResponseBe
 		address := bytes.HexBytes(req.LastCommitInfo.Votes[i].Validator.Address).String()
 		validator := app.Validators[address]
 
-		// This should be changed to be dependant on your stake
-		validator.GovernancePower += 1
+		validator.GovernancePower += validator.GovernancePower / 10000
 		app.PendingBlockRewards[i] = types.Ed25519ValidatorUpdate(validator.PubKey.Bytes(), validator.GovernancePower)
 
 		app.Validators[address] = validator
@@ -356,11 +356,13 @@ func (app *Application) BeginBlock(req types.RequestBeginBlock) types.ResponseBe
 		address := bytes.HexBytes(req.ByzantineValidators[i].Validator.Address).String()
 		validator := app.Validators[address]
 
-		// Check if it's not going bellow 0
 		// Can a validator withdrawl their governance power before the evidence against their actions is finalized to prevent punishment?
-		// This should be changed to be dependant on your stake
-		validator.GovernancePower -= 1
-		// If their GovernancePower is bellow the threshold, move all to tokens and give them GovernancePower 0
+		validator.GovernancePower -= validator.GovernancePower / 100
+		if (validator.GovernancePower < 10_000 * 10^9) {
+			// If their GovernancePower is bellow the threshold, move all to tokens and give them GovernancePower 0
+			validator.Tokens += validator.GovernancePower;
+			validator.GovernancePower = 0;
+		}
 		app.PendingBlockRewards[len(req.LastCommitInfo.Votes)+i] = types.Ed25519ValidatorUpdate(validator.PubKey.Bytes(), validator.GovernancePower)
 
 		app.Validators[address] = validator

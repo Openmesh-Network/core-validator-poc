@@ -3,8 +3,8 @@ const axios = require("axios");
 
 const abciAddress = process.argv[2];
 const rpcAddress = process.argv[3];
-const lastPrice = { btcusdt: 0, ethusdt: 0 };
-const lastTimestamp = { btcusdt: 0, ethusdt: 0 };
+const lastPrice = {};
+const lastTimestamp = {};
 
 let abci;
 
@@ -34,12 +34,10 @@ function start() {
 
 function handleMessage(data) {
   const info = JSON.parse(data);
-  const price = toUint32Bytes(info.p * 1); // Just to be sure it's converted to an integer, not passed as string
-  const timestamp = toUint64Bytes((info.E / 1000) * 1); // 1s timestamps (first event of the second decides the price)
-  const priceAsUint32 = toUint(price);
-  const timestampAsUint64 = toUint(timestamp);
-  if (priceAsUint32 != lastPrice[info.s]) {
-    if (timestampAsUint64 == lastTimestamp[info.s]) {
+  const price = info.p;
+  const timestamp = Math.round(info.E / 1000); // 1s timestamps (first event of the second decides the price)
+  if (price != lastPrice[info.s]) {
+    if (timestamp == lastTimestamp[info.s]) {
       return; // max 1 update per timestamp, not applicable to streams updating on a set interval
     }
 
@@ -47,8 +45,8 @@ function handleMessage(data) {
     const json = JSON.stringify({
       TransactionType: 0,
       DataFeed: "Binance|" + info.s + "|price", // Source|Item|property ? Decide a nice format lol
-      DataValue: priceAsUint32.toString(),
-      DataTimestamp: timestampAsUint64,
+      DataValue: price,
+      DataTimestamp: timestamp,
     });
     const message = [...Buffer.from(json)];
     abci.send(message, (err) => {
@@ -64,13 +62,13 @@ function handleMessage(data) {
           const json = JSON.stringify({
             TransactionType: 0,
             DataFeed: "Binance|" + info.s + "|price", // Source|Item|property ? Decide a nice format lol
-            DataValue: priceAsUint32.toString(),
-            DataTimestamp: timestampAsUint64,
+            DataValue: price,
+            DataTimestamp: timestamp,
           });
           const tx = [...Buffer.from(json)];
           const url = rpcAddress + "/broadcast_tx_async?tx=0x" + toHexString(tx);
           try {
-            console.log("trying transaction", url, `(${priceAsUint32} at ${timestampAsUint64})`);
+            console.log("trying transaction", url, `(${price} at ${timestamp})`);
             await axios.request(url);
           } catch (err) {
             console.error(err?.response?.data ?? err);
@@ -79,42 +77,9 @@ function handleMessage(data) {
       }
     });
 
-    lastPrice[info.s] = priceAsUint32;
-    lastTimestamp[info.s] = timestampAsUint64;
+    lastPrice[info.s] = price;
+    lastTimestamp[info.s] = timestamp;
   }
-}
-
-function toUint32Bytes(number) {
-  let bytesArray = [0, 0, 0, 0];
-
-  for (let i = bytesArray.length - 1; i >= 0; i--) {
-    let byte = number & 0xff;
-    bytesArray[i] = byte;
-    number = (number - byte) / 256;
-  }
-
-  return bytesArray;
-}
-
-function toUint64Bytes(number) {
-  let bytesArray = [0, 0, 0, 0, 0, 0, 0, 0];
-
-  for (let i = bytesArray.length - 1; i >= 0; i--) {
-    let byte = number & 0xff;
-    bytesArray[i] = byte;
-    number = (number - byte) / 256;
-  }
-
-  return bytesArray;
-}
-
-function toUint(bytesArray) {
-  let value = 0;
-  for (let i = 0; i < bytesArray.length; i++) {
-    value = value * 256 + bytesArray[i];
-  }
-
-  return value;
 }
 
 function toHexString(bytes) {
