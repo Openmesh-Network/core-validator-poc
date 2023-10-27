@@ -32,7 +32,14 @@ function start() {
       }
 
       console.log(`BTCUSDT is ${info.p} at ${info.E}`);
-      abci.send(price.concat(timestamp), (err) => {
+      const json = JSON.stringify({
+        TransactionType: 0,
+        DataFeed: "Binance|BTCUSDT|price", // Source|Item|property ? Decide a nice format lol
+        DataValue: priceAsUint32.toString(),
+        DataTimestamp: timestampAsUint64,
+      });
+      const message = [...Buffer.from(json)];
+      abci.send(message, (err) => {
         if (err) {
           console.error("xnode communcication error", err);
           return;
@@ -42,14 +49,17 @@ function start() {
         // Two nodes generating the same transaction is no problem, just a possible waste of bandwith
         if (abciAddress == "192.167.10.6") {
           setTimeout(async () => {
-            const priceHex = priceAsUint32.toString(16).padStart(8, "0");
-            const timestampHex = timestampAsUint64.toString(16).padStart(16, "0");
-            const url = rpcAddress + "/broadcast_tx_async?tx=0x" + priceHex + timestampHex; // broadcast_tx_commit if you want to wait until confirmed (included in block)
+            const json = JSON.stringify({
+              TransactionType: 0,
+              DataFeed: "Binance|BTCUSDT|price", // Source|Item|property ? Decide a nice format lol
+              DataValue: priceAsUint32.toString(),
+              DataTimestamp: timestampAsUint64,
+            });
+            const tx = [...Buffer.from(json)];
+            const url = rpcAddress + "/broadcast_tx_async?tx=0x" + toHexString(tx);
             try {
               console.log("trying transaction", url, `(${priceAsUint32} at ${timestampAsUint64})`);
-              /*const res = */ await axios.request(url);
-              // Commented out succes message to make logs more readable
-              // console.log("transaction response", res?.data);
+              await axios.request(url);
             } catch (err) {
               console.error(err?.response?.data ?? err);
             }
@@ -94,4 +104,10 @@ function toUint(bytesArray) {
   }
 
   return value;
+}
+
+function toHexString(bytes) {
+  return Array.from(bytes, (byte) => {
+    return ("0" + (byte & 0xff).toString(16)).slice(-2);
+  }).join("");
 }
