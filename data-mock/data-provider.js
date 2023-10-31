@@ -43,7 +43,7 @@ function handleMessage(data) {
 
     console.log(`${info.s} is ${info.p} at ${info.E}`);
     const json = JSON.stringify({
-      TransactionType: 0,
+      MessageType: 0, // Add verified Xnode data
       DataFeed: "Binance|" + info.s + "|price", // Source|Item|property ? Decide a nice format lol
       DataValue: price,
       DataTimestamp: timestamp,
@@ -60,7 +60,7 @@ function handleMessage(data) {
       if (abciAddress == "192.167.10.6") {
         setTimeout(async () => {
           const json = JSON.stringify({
-            TransactionType: 0,
+            TransactionType: 0, // Try to reach consensus on data
             DataFeed: "Binance|" + info.s + "|price", // Source|Item|property ? Decide a nice format lol
             DataValue: price,
             DataTimestamp: timestamp,
@@ -73,7 +73,7 @@ function handleMessage(data) {
           } catch (err) {
             console.error(err?.response?.data ?? err);
           }
-        }, 100);
+        }, 2500); // Ensure that the transaction time is (> data time + 1 sec) in UTC seconds (maybe we can reduce it, I am not sure how it's rounded)
       }
     });
 
