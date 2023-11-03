@@ -1,5 +1,7 @@
 const WebSocket = require("ws");
 const axios = require("axios");
+const { createPublicClient, http, parseAbi } = require("viem");
+const { polygonMumbai } = require("viem/chains");
 
 const abciAddress = process.argv[2];
 const rpcAddress = process.argv[3];
@@ -30,6 +32,46 @@ function start() {
     console.log("Binance ETHUSDT connected!");
   });
   binanceETHUSDT.on("message", handleMessage);
+
+  const client = createPublicClient({
+    chain: polygonMumbai,
+    transport: http(),
+  });
+  const openstaking = {
+    address: "0x57ef7d9BB8532E7E4179dC2ce9097783470c4833",
+    abi: parseAbi(["event TokensStaked(address indexed account, uint256 amount)"]),
+  };
+  client.watchContractEvent({
+    ...openstaking,
+    eventName: "TokensStaked",
+    onLogs: (logs) => {
+      const {
+        transactionHash,
+        args: { account, amount },
+      } = logs[0];
+
+      console.log(account, "staked", amount);
+
+      const json = JSON.stringify({
+        MessageType: 1, // Add verified deposit
+        TransactionHash: transactionHash,
+        DepositInfo: {
+          Address: account,
+          Amount: Number(amount), // Risky!
+        },
+      });
+      const message = [...Buffer.from(json)];
+      abci.send(message, (err) => {
+        if (err) {
+          console.error("deposit communcication error", err);
+          return;
+        }
+      });
+    },
+    onError: (error) => {
+      console.error("Contract watch error", error);
+    },
+  });
 }
 
 function handleMessage(data) {

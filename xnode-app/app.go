@@ -135,24 +135,26 @@ var addr = flag.String("addr", "0.0.0.0:8088", "receiving xnode data")
 
 var upgrader = websocket.Upgrader{} // use default options
 
+var logger log.Logger;
+
 func receiveXnodeData(w http.ResponseWriter, r *http.Request) {
 	c, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		fmt.Print("Xnode upgrade error", "err", err)
+		logger.Error("Xnode upgrade error", "err", err)
 		return
 	}
 	defer c.Close()
 	for {
 		_, message, err := c.ReadMessage()
 		if err != nil {
-			fmt.Println("Xnode read error", "err", err)
+			logger.Error("Xnode read error", "err", err)
 			break
 		}
 
 		xnodeMessage := &XnodeMessage{}
 		err = json.Unmarshal(message, xnodeMessage)
 		if err != nil {
-			fmt.Println("Xnode message decode error", "err", err)
+			logger.Error("Xnode message decode error", "err", err)
 		}	
 
 		switch (xnodeMessage.MessageType) {
@@ -160,7 +162,7 @@ func receiveXnodeData(w http.ResponseWriter, r *http.Request) {
 			xnodeData := &XnodeDataMessage{}
 			err = json.Unmarshal(message, xnodeData)
 			if err != nil {
-				fmt.Println("Xnode data message decode error", "err", err)
+				logger.Error("Xnode data message decode error", "err", err)
 			}
 	
 			_, mapExists := verifiedXnodeData[xnodeData.DataFeed]
@@ -169,16 +171,16 @@ func receiveXnodeData(w http.ResponseWriter, r *http.Request) {
 			}
 			
 			verifiedXnodeData[xnodeData.DataFeed][xnodeData.DataTimestamp] = xnodeData.DataValue
-			fmt.Printf("Verified %v added: %v at %d", xnodeData.DataFeed, xnodeData.DataValue, xnodeData.DataTimestamp)
+			logger.Info(fmt.Sprintf("Verified %v added: %v at %d", xnodeData.DataFeed, xnodeData.DataValue, xnodeData.DataTimestamp))
 		case XnodeMessageDeposit:
 			xnodeDeposit := &XnodeDepositMessage{}
 			err = json.Unmarshal(message, xnodeDeposit)
 			if err != nil {
-				fmt.Println("Xnode deposit message decode error", "err", err)
+				logger.Error("Xnode deposit message decode error", "err", err)
 			}
 			
 			verifiedDeposits[xnodeDeposit.TransactionHash] = xnodeDeposit.DepositInfo
-			fmt.Printf("Verified deposit %v added: (%d from %v)", xnodeDeposit.TransactionHash, xnodeDeposit.DepositInfo.Amount, xnodeDeposit.DepositInfo.Address)
+			logger.Info(fmt.Sprintf("Verified deposit %v added: (%d from %v)", xnodeDeposit.TransactionHash, xnodeDeposit.DepositInfo.Amount, xnodeDeposit.DepositInfo.Address))
 		}
 
 	}
@@ -214,7 +216,7 @@ func main() {
 	}
 
 	app := NewApplication(*config)
-	logger, err := log.NewDefaultLogger("text", "debug", true)
+	logger, err = log.NewDefaultLogger("text", "debug", true)
 	if err != nil {
 		fmt.Println("Error while creating logger", "err", err)
 	}
@@ -259,7 +261,7 @@ func NewApplication(config ConfigFile) *Application {
 		}
 		pk := ed25519.PubKey(pkBytes)
 		if pk.Address().String() != config.Validators[i].Address {
-			fmt.Println("Calculated address of public key does not match given address", pk.Address().String(), config.Validators[i].Address)
+			logger.Error("Calculated address of public key does not match given address", pk.Address().String(), config.Validators[i].Address)
 		}
 		validators[config.Validators[i].Address] = AbciValidator{
 			PubKey: pk,
@@ -311,7 +313,6 @@ func (app *Application) ValidateTx(txBytes []byte) types.ResponseCheckTx {
 
 		latestAllowedTimestamp := uint64(time.Now().Unix()) - 1 // Validators should have at least 1 second to receive the data
 		if validateDataTx.DataTimestamp >= latestAllowedTimestamp {
-			fmt.Println(validateDataTx.DataTimestamp, "vs", latestAllowedTimestamp)
 			// Is this exploitable? Evil validators accepting transcations that are just under 1 second
 			// low latency validators not accepting, higher latency validators do accept (low latency validators get punished?)
 
