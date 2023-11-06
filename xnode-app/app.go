@@ -20,6 +20,7 @@ import (
 	"flag"
 	"net/http"
 
+	eth "github.com/ethereum/go-ethereum/crypto"
 	"github.com/gorilla/websocket"
 )
 
@@ -36,6 +37,7 @@ const (
 	CodeTypeNotEnoughUnstakedTokens			uint32 = 21
 
 	CodeTypeDepositNotVerified				uint32 = 30
+	CodeTypeDepositInvalidSignature			uint32 = 31
 
 	CodeTypeUnknownError  					uint32 = 999
 )
@@ -380,7 +382,7 @@ func (app *Application) ValidateTx(txBytes []byte) types.ResponseCheckTx {
 			}
 		}
 
-		_, exists := verifiedDeposits[claimTokensTx.TransactionHash]
+		deposit, exists := verifiedDeposits[claimTokensTx.TransactionHash]
 		if !exists {
 			// Does this also need a timestamp to check if it's not too recent?
 			return types.ResponseCheckTx{
@@ -388,7 +390,16 @@ func (app *Application) ValidateTx(txBytes []byte) types.ResponseCheckTx {
 				Log:  fmt.Sprintf("Deposit is not confirmed by our xnode (attempted: %v)", claimTokensTx.TransactionHash),
 			}
 		}
-		// check proof
+
+		data := []byte("hello")
+		hash := eth.Keccak256Hash(data)
+		signerAddress, err := eth.Ecrecover(hash.Bytes(), []byte(claimTokensTx.Proof))
+		if err != nil || bytes.HexBytes(signerAddress).String() != deposit.Address {
+			return types.ResponseCheckTx{
+				Code: CodeTypeDepositInvalidSignature,
+				Log:  fmt.Sprintf("Signature does not match depositer address, it should be signed by: %v", deposit.Address),
+			}
+		}
 
 	case TransactionWithdrawTokens:
 		withdrawTokensTx := &WithdrawTokensTx{}

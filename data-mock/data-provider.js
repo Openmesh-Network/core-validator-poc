@@ -57,7 +57,8 @@ function start() {
         TransactionHash: transactionHash,
         DepositInfo: {
           Address: account,
-          Amount: Number(amount), // Risky!
+          // Send over amount in 2 integers? Doing this here is a bit unintuative (but doing in the app reduces precision)
+          Amount: Number((amount / BigInt(10)) ^ BigInt(9)), // Risky!)
         },
       });
       const message = [...Buffer.from(json)];
