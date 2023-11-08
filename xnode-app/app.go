@@ -1,23 +1,29 @@
 package main
 
 import (
-	b64 "encoding/base64"
-	"encoding/binary"
+	"context"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
+	"log"
 	"os"
-	"strconv"
 	"time"
 
-	"github.com/tendermint/tendermint/abci/server"
-	"github.com/tendermint/tendermint/abci/types"
-	"github.com/tendermint/tendermint/crypto"
-	"github.com/tendermint/tendermint/crypto/ed25519"
-	"github.com/tendermint/tendermint/libs/bytes"
-	"github.com/tendermint/tendermint/libs/log"
-	tmos "github.com/tendermint/tendermint/libs/os"
+	"github.com/cometbft/cometbft/abci/types"
+	cfg "github.com/cometbft/cometbft/config"
+	"github.com/cometbft/cometbft/crypto"
+	"github.com/cometbft/cometbft/crypto/ed25519"
+	"github.com/cometbft/cometbft/libs/bytes"
+	cmtflags "github.com/cometbft/cometbft/libs/cli/flags"
+	cmtlog "github.com/cometbft/cometbft/libs/log"
+	cmtos "github.com/cometbft/cometbft/libs/os"
+	nm "github.com/cometbft/cometbft/node"
+	"github.com/cometbft/cometbft/p2p"
+	"github.com/cometbft/cometbft/privval"
+	"github.com/cometbft/cometbft/proxy"
+	"github.com/spf13/viper"
 
-	"flag"
 	"net/http"
 
 	eth "github.com/ethereum/go-ethereum/crypto"
@@ -25,51 +31,51 @@ import (
 )
 
 const (
-	CodeTypeOK            					uint32 = 0
-	CodeTypeTransactionTypeDecodingError	uint32 = 1
-	CodeTypeTransactionDecodingError 		uint32 = 2
+	CodeTypeOK                           uint32 = 0
+	CodeTypeTransactionTypeDecodingError uint32 = 1
+	CodeTypeTransactionDecodingError     uint32 = 2
 
-	CodeTypeDataNotVerified   				uint32 = 10
-	CodeTypeDataOutdated  					uint32 = 11
-	CodeTypeDataTooNew  					uint32 = 12
+	CodeTypeDataNotVerified uint32 = 10
+	CodeTypeDataOutdated    uint32 = 11
+	CodeTypeDataTooNew      uint32 = 12
 
-	CodeTypeNotEnoughStakedTokens			uint32 = 20
-	CodeTypeNotEnoughUnstakedTokens			uint32 = 21
+	CodeTypeNotEnoughStakedTokens   uint32 = 20
+	CodeTypeNotEnoughUnstakedTokens uint32 = 21
 
-	CodeTypeDepositNotVerified				uint32 = 30
-	CodeTypeDepositInvalidSignature			uint32 = 31
+	CodeTypeDepositNotVerified      uint32 = 30
+	CodeTypeDepositInvalidSignature uint32 = 31
 
-	CodeTypeUnknownError  					uint32 = 999
+	CodeTypeUnknownError uint32 = 999
 )
 
 type AbciValidator struct {
-	PubKey crypto.PubKey
+	PubKey          crypto.PubKey
 	GovernancePower int64 // Staked tokens, can be unstaked
 	// Tokens has 9 decimals (so * 10^9 to convert to blockchain tokens, / 10*9 to convert to blockchain coins)
 	Tokens int64 // Unstaked tokens, can be withdrawn or staked
 }
 
 type VerifiedDataItem struct {
-	Data string
+	Data      string
 	Timestamp uint64
 }
 
 type Application struct {
 	types.BaseApplication
 
-	Validators map[string]AbciValidator // Address -> Validator info
+	Validators   map[string]AbciValidator    // Address -> Validator info
 	VerifiedData map[string]VerifiedDataItem // Datafeed -> Data item
 
-	PendingBlockRewards []types.ValidatorUpdate // Also includes slashing
-	totalTransactions uint32
+	TotalTransactions uint32
 }
 
+// Transactions
 const (
-	TransactionValidateData 	uint8 = 0
+	TransactionValidateData uint8 = 0
 
-	TransactionStakeTokens 		uint8 = 10
-	TransactionClaimTokens 		uint8 = 11
-	TransactionWithdrawTokens 	uint8 = 12
+	TransactionStakeTokens    uint8 = 10
+	TransactionClaimTokens    uint8 = 11
+	TransactionWithdrawTokens uint8 = 12
 )
 
 type Transaction struct {
@@ -78,38 +84,39 @@ type Transaction struct {
 
 // Try to reach consensus about a piece of data
 type ValidateDataTx struct {
-	DataFeed string
-	DataValue string
+	DataFeed      string
+	DataValue     string
 	DataTimestamp uint64
 }
 
 // Stake / Unstake tokens
 type StakeTokensTx struct {
-	Amount int64 // Negative amount to unstake
+	Amount           int64 // Negative amount to unstake
 	ValidatorAddress string
-	Proof string
+	Proof            string
 }
 
 // Claim tokens by providing ethereum transaction hash, proof is from the ethereum address that deposited their tokens
 type ClaimTokensTx struct {
-	TransactionHash string
+	TransactionHash  string
 	ValidatorAddress string
-	Proof string
+	Proof            string
 }
 
 // Withdraw unstaked tokens to ethreum blockchain
 type WithdrawTokensTx struct {
-	Amount int64
-	Address string
+	Amount           int64
+	Address          string
 	ValidatorAddress string
-	Proof string
+	Proof            string
 }
 
+// Xnode
 var verifiedXnodeData = make(map[string]map[uint64]string) // datafeed -> timestamp -> data
-var verifiedDeposits = make(map[string]DepositItem) // transaction hash -> deposit info
+var verifiedDeposits = make(map[string]DepositItem)        // transaction hash -> deposit info
 
 const (
-	XnodeMessageData 	uint8 = 0
+	XnodeMessageData    uint8 = 0
 	XnodeMessageDeposit uint8 = 1
 )
 
@@ -118,199 +125,217 @@ type XnodeMessage struct {
 }
 
 type XnodeDataMessage struct {
-	DataFeed string
-	DataValue string
+	DataFeed      string
+	DataValue     string
 	DataTimestamp uint64
 }
 
 type DepositItem struct {
 	Address string
-	Amount int64
+	Amount  int64
 }
 
 type XnodeDepositMessage struct {
 	TransactionHash string
-	DepositInfo DepositItem
+	DepositInfo     DepositItem
 }
-
-var addr = flag.String("addr", "0.0.0.0:8088", "receiving xnode data")
-
-var upgrader = websocket.Upgrader{} // use default options
-
-var logger log.Logger;
 
 func receiveXnodeData(w http.ResponseWriter, r *http.Request) {
 	c, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		logger.Error("Xnode upgrade error", "err", err)
+		log.Fatal("Xnode upgrade error", "err", err)
 		return
 	}
 	defer c.Close()
 	for {
 		_, message, err := c.ReadMessage()
 		if err != nil {
-			logger.Error("Xnode read error", "err", err)
+			log.Fatal("Xnode read error", "err", err)
 			break
 		}
 
 		xnodeMessage := &XnodeMessage{}
 		err = json.Unmarshal(message, xnodeMessage)
 		if err != nil {
-			logger.Error("Xnode message decode error", "err", err)
-		}	
+			log.Fatal("Xnode message decode error", "err", err)
+		}
 
-		switch (xnodeMessage.MessageType) {
+		switch xnodeMessage.MessageType {
 		case XnodeMessageData:
 			xnodeData := &XnodeDataMessage{}
 			err = json.Unmarshal(message, xnodeData)
 			if err != nil {
-				logger.Error("Xnode data message decode error", "err", err)
+				log.Fatal("Xnode data message decode error", "err", err)
 			}
-	
+
 			_, mapExists := verifiedXnodeData[xnodeData.DataFeed]
 			if !mapExists {
 				verifiedXnodeData[xnodeData.DataFeed] = make(map[uint64]string)
 			}
-			
+
 			verifiedXnodeData[xnodeData.DataFeed][xnodeData.DataTimestamp] = xnodeData.DataValue
-			logger.Info(fmt.Sprintf("Verified %v added: %v at %d", xnodeData.DataFeed, xnodeData.DataValue, xnodeData.DataTimestamp))
+			//logger.Info(fmt.Sprintf("Verified %v added: %v at %d", xnodeData.DataFeed, xnodeData.DataValue, xnodeData.DataTimestamp))
 		case XnodeMessageDeposit:
 			xnodeDeposit := &XnodeDepositMessage{}
 			err = json.Unmarshal(message, xnodeDeposit)
 			if err != nil {
-				logger.Error("Xnode deposit message decode error", "err", err)
+				log.Fatal("Xnode deposit message decode error", "err", err)
 			}
-			
+
 			verifiedDeposits[xnodeDeposit.TransactionHash] = xnodeDeposit.DepositInfo
-			logger.Info(fmt.Sprintf("Verified deposit %v added: (%d from %v)", xnodeDeposit.TransactionHash, xnodeDeposit.DepositInfo.Amount, xnodeDeposit.DepositInfo.Address))
+			//logger.Info(fmt.Sprintf("Verified deposit %v added: (%d from %v)", xnodeDeposit.TransactionHash, xnodeDeposit.DepositInfo.Amount, xnodeDeposit.DepositInfo.Address))
 		}
 
 	}
 }
 
-type ConfigFile struct {
-    Validators []ConfigValidator `json:"validators"`
-}
+var upgrader = websocket.Upgrader{} // use default options
+var addr = flag.String("addr", "0.0.0.0:8088", "Address for websocket receiving xnode data")
+var homeDir = flag.String("cmt-home", "", "Path to the CometBFT config directory (if empty, uses $HOME/.cometbft)")
 
-type ConfigValidator struct {
-    Address string `json:"address"`
-	PubKey ConfigPubKey `json:"pub_key"`
-	Power string `json:"power"`
-}
-
-type ConfigPubKey struct {
-	Type string `json:"type"`
-	Value string `json:"value"`
-}
+const (
+	minimumValidatorPower = 10_000*10 ^ 9
+)
 
 func main() {
-	// Needed for the intial validators
-	configFile := "/tendermint/" + os.Args[1] // /tendermint is a volume from Docker refering to ../tendermint/build
-	configFileContent, err := os.ReadFile(configFile)
-	if err != nil {
-		fmt.Println("Error while reading config file", "err", err)
+	flag.Parse()
+	if *homeDir == "" {
+		*homeDir = os.ExpandEnv("$HOME/.cometbft")
 	}
 
-	config := &ConfigFile{}
-    err = json.Unmarshal(configFileContent, config)
+	config := cfg.DefaultConfig()
+	config.SetRoot(*homeDir)
+	viper.SetConfigFile(fmt.Sprintf("%s/%s", *homeDir, "config/config.toml"))
+
+	if err := viper.ReadInConfig(); err != nil {
+		log.Fatalf("Reading config: %v", err)
+	}
+	if err := viper.Unmarshal(config); err != nil {
+		log.Fatalf("Decoding config: %v", err)
+	}
+	if err := config.ValidateBasic(); err != nil {
+		log.Fatalf("Invalid configuration data: %v", err)
+	}
+	// dbPath := filepath.Join(*homeDir, "badger")
+	// db, err := badger.Open(badger.DefaultOptions(dbPath))
+
+	// if err != nil {
+	//     log.Fatalf("Opening database: %v", err)
+	// }
+	// defer func() {
+	//     if err := db.Close(); err != nil {
+	//         log.Printf("Closing database: %v", err)
+	//     }
+	// }()
+
+	// app := NewApplication(db)
+	app := NewApplication()
+
+	pv := privval.LoadFilePV(
+		config.PrivValidatorKeyFile(),
+		config.PrivValidatorStateFile(),
+	)
+
+	nodeKey, err := p2p.LoadNodeKey(config.NodeKeyFile())
 	if err != nil {
-		fmt.Println("Error while parsing config file json", "err", err)
+		log.Fatalf("failed to load node's key: %v", err)
 	}
 
-	app := NewApplication(*config)
-	logger, err = log.NewDefaultLogger("text", "debug", true)
+	logger := cmtlog.NewTMLogger(cmtlog.NewSyncWriter(os.Stdout))
+	logger, err = cmtflags.ParseLogLevel(config.LogLevel, logger, cfg.DefaultLogLevel)
+
 	if err != nil {
-		fmt.Println("Error while creating logger", "err", err)
+		log.Fatalf("failed to parse log level: %v", err)
 	}
 
-	// Start the listener
-	srv, err := server.NewServer("0.0.0.0:26658", "socket", app)
+	// Consensus node
+	node, err := nm.NewNode(
+		config,
+		pv,
+		nodeKey,
+		proxy.NewLocalClientCreator(app),
+		nm.DefaultGenesisDocProviderFunc(config),
+		cfg.DefaultDBProvider,
+		nm.DefaultMetricsProvider(config.Instrumentation),
+		logger,
+	)
+
 	if err != nil {
-		logger.Error("Error while creating server", "err", err)
+		log.Fatalf("Creating node: %v", err)
 	}
-	srv.SetLogger(logger.With("module", "abci-server"))
-	if err := srv.Start(); err != nil {
-		logger.Error("Error while setting logger", "err", err)
+
+	if err := node.Start(); err != nil {
+		log.Fatalf("failed to start node: %v", err)
 	}
+	logger.Info("Started node", "nodeInfo", node.Switch().NodeInfo())
 
 	// Stop upon receiving SIGTERM or CTRL-C.
-	tmos.TrapSignal(logger, func() {
-		// Cleanup
-		if err := srv.Stop(); err != nil {
-			logger.Error("Error while stopping server", "err", err)
+	cmtos.TrapSignal(logger, func() {
+		if node.IsRunning() {
+			if err := node.Stop(); err != nil {
+				log.Fatal("unable to stop the node", "error", err)
+			}
 		}
 	})
 
-	flag.Parse()
+	// Xnode communication
 	http.HandleFunc("/", receiveXnodeData)
-	fmt.Println(http.ListenAndServe(*addr, nil))
+	log.Fatalf("xnode listener error: %v", http.ListenAndServe(*addr, nil))
 
 	// Run forever.
 	select {}
 }
 
-func NewApplication(config ConfigFile) *Application {
-	validators := make(map[string]AbciValidator)
-	for i := 0; i < len(config.Validators); i++ {
-		powerAsInt, err := strconv.ParseInt(config.Validators[i].Power, 10, 64)
-		if err != nil {
-			panic(err)
-		}
-		
-		pkBytes, err := b64.StdEncoding.DecodeString(config.Validators[i].PubKey.Value)
-		if err != nil {
-			panic(err)
-		}
-		pk := ed25519.PubKey(pkBytes)
-		if pk.Address().String() != config.Validators[i].Address {
-			logger.Error("Calculated address of public key does not match given address", pk.Address().String(), config.Validators[i].Address)
-		}
-		validators[config.Validators[i].Address] = AbciValidator{
-			PubKey: pk,
-			GovernancePower: powerAsInt,
-			Tokens: 0,
-		}
-	}
-	return &Application{Validators: validators, VerifiedData: make(map[string]VerifiedDataItem)}
+func NewApplication() *Application {
+	return &Application{Validators: make(map[string]AbciValidator), VerifiedData: make(map[string]VerifiedDataItem)}
 }
 
-func (app *Application) Info(req types.RequestInfo) types.ResponseInfo {
+func (app *Application) Info(_ context.Context, info *types.RequestInfo) (*types.ResponseInfo, error) {
 	verifiedData, err := json.Marshal(app.VerifiedData)
 	if err != nil {
-		return types.ResponseInfo{
+		return &types.ResponseInfo{
 			Data: fmt.Sprintf("Something went wrong parsing verified data err %v", err),
-		}
+		}, err
 	}
 
 	validators, err := json.Marshal(app.Validators)
 	if err != nil {
-		return types.ResponseInfo{
+		return &types.ResponseInfo{
 			Data: fmt.Sprintf("Something went wrong parsing validators err %v", err),
-		}
+		}, err
 	}
 
-	return types.ResponseInfo{Data: fmt.Sprintf("{\"VerifiedData\":%v,\"Validators\":%v,\"TotalUpdates\":%v}", string(verifiedData), string(validators), app.totalTransactions)}
+	return &types.ResponseInfo{Data: fmt.Sprintf("{\"VerifiedData\":%v,\"Validators\":%v,\"TotalUpdates\":%v}", string(verifiedData), string(validators), app.TotalTransactions)}, nil
 }
 
-func (app *Application) ValidateTx(txBytes []byte) types.ResponseCheckTx {
+func (app *Application) Query(_ context.Context, req *types.RequestQuery) (*types.ResponseQuery, error) {
+	switch req.Path {
+	case "tx":
+		return &types.ResponseQuery{Value: []byte(fmt.Sprintf("%v", app.TotalTransactions))}, nil
+	default:
+		return &types.ResponseQuery{Log: fmt.Sprintf("Invalid query path. Expected price, time or tx, got %v", req.Path)}, nil
+	}
+}
+
+func (app *Application) CheckTx(_ context.Context, check *types.RequestCheckTx) (*types.ResponseCheckTx, error) {
 	tx := &Transaction{}
-	err := json.Unmarshal(txBytes, tx)
+	err := json.Unmarshal(check.Tx, tx)
 	if err != nil {
-		return types.ResponseCheckTx{
+		return &types.ResponseCheckTx{
 			Code: CodeTypeTransactionTypeDecodingError,
 			Log:  fmt.Sprint("Not able to parse transaction type", "err", err),
-		}
+		}, err
 	}
 
-	switch (tx.TransactionType) {
+	switch tx.TransactionType {
 	case TransactionValidateData:
 		validateDataTx := &ValidateDataTx{}
-		err := json.Unmarshal(txBytes, validateDataTx)
+		err := json.Unmarshal(check.Tx, validateDataTx)
 		if err != nil {
-			return types.ResponseCheckTx{
+			return &types.ResponseCheckTx{
 				Code: CodeTypeTransactionDecodingError,
 				Log:  fmt.Sprint("Not able to parse validate data transaction", "err", err),
-			}
+			}, err
 		}
 
 		latestAllowedTimestamp := uint64(time.Now().Unix()) - 1 // Validators should have at least 1 second to receive the data
@@ -318,286 +343,283 @@ func (app *Application) ValidateTx(txBytes []byte) types.ResponseCheckTx {
 			// Is this exploitable? Evil validators accepting transcations that are just under 1 second
 			// low latency validators not accepting, higher latency validators do accept (low latency validators get punished?)
 
-			return types.ResponseCheckTx{
+			return &types.ResponseCheckTx{
 				Code: CodeTypeDataTooNew,
-				Log:  fmt.Sprintf("New transaction timestamp is not old enough (attempted: %d, latest accepted: %d)", 
-					validateDataTx.DataTimestamp, 
+				Log: fmt.Sprintf("New transaction timestamp is not old enough (attempted: %d, latest accepted: %d)",
+					validateDataTx.DataTimestamp,
 					latestAllowedTimestamp,
 				),
-			}
+			}, errors.New("new transaction timestamp is not old enough")
 		}
 
 		if validateDataTx.DataTimestamp <= app.VerifiedData[validateDataTx.DataFeed].Timestamp {
-			return types.ResponseCheckTx{
+			return &types.ResponseCheckTx{
 				Code: CodeTypeDataOutdated,
-				Log:  fmt.Sprintf("New transaction timestamp is not newer than latest one (attempted: %d, latest: %d)", 
-					validateDataTx.DataTimestamp, 
+				Log: fmt.Sprintf("New transaction timestamp is not newer than latest one (attempted: %d, latest: %d)",
+					validateDataTx.DataTimestamp,
 					app.VerifiedData[validateDataTx.DataFeed].Timestamp,
 				),
-			}
+			}, errors.New("new transaction timestamp is not newer than latest one")
 		}
 		dataFromXnode, exists := verifiedXnodeData[validateDataTx.DataFeed][validateDataTx.DataTimestamp]
-		if (!exists || dataFromXnode != validateDataTx.DataValue) {
-			return types.ResponseCheckTx{
+		if !exists || dataFromXnode != validateDataTx.DataValue {
+			return &types.ResponseCheckTx{
 				Code: CodeTypeDataNotVerified,
-				Log:  fmt.Sprintf("New transaction data is not confirmed by our xnode (attempted: %v at %d)", 
+				Log: fmt.Sprintf("New transaction data is not confirmed by our xnode (attempted: %v at %d)",
 					validateDataTx.DataValue,
-					validateDataTx.DataTimestamp, 
+					validateDataTx.DataTimestamp,
 				),
-			}
+			}, errors.New("new transaction data is not confirmed by our xnode")
 		}
 
 	case TransactionStakeTokens:
 		stakeTokensTx := &StakeTokensTx{}
-		err := json.Unmarshal(txBytes, stakeTokensTx)
+		err := json.Unmarshal(check.Tx, stakeTokensTx)
 		if err != nil {
-			return types.ResponseCheckTx{
+			return &types.ResponseCheckTx{
 				Code: CodeTypeTransactionDecodingError,
 				Log:  fmt.Sprint("Not able to parse stake tokens transaction", "err", err),
-			}
+			}, err
 		}
 
 		validator := app.Validators[stakeTokensTx.ValidatorAddress]
-		if stakeTokensTx.Amount > 0 && validator.Tokens - stakeTokensTx.Amount >= 0 {
-			return types.ResponseCheckTx{
+		if stakeTokensTx.Amount > 0 && validator.Tokens-stakeTokensTx.Amount >= 0 {
+			return &types.ResponseCheckTx{
 				Code: CodeTypeNotEnoughUnstakedTokens,
 				Log:  fmt.Sprintf("Trying to stake more tokens than unstaked (attempted: %d, unstaked: %d)", stakeTokensTx.Amount, validator.Tokens),
-			}
+			}, errors.New("trying to stake more tokens than unstaked")
 		}
-		if stakeTokensTx.Amount < 0 && validator.GovernancePower + stakeTokensTx.Amount >= 0 {
-			return types.ResponseCheckTx{
+		if stakeTokensTx.Amount < 0 && validator.GovernancePower+stakeTokensTx.Amount >= 0 {
+			return &types.ResponseCheckTx{
 				Code: CodeTypeNotEnoughStakedTokens,
 				Log:  fmt.Sprintf("Trying to unstake more tokens than staked (attemped: %d, staked: %d)", -stakeTokensTx.Amount, validator.GovernancePower),
-			}
+			}, errors.New("trying to unstake more tokens than staked")
 		}
 		// check proof
 
 	case TransactionClaimTokens:
 		claimTokensTx := &ClaimTokensTx{}
-		err := json.Unmarshal(txBytes, claimTokensTx)
+		err := json.Unmarshal(check.Tx, claimTokensTx)
 		if err != nil {
-			return types.ResponseCheckTx{
+			return &types.ResponseCheckTx{
 				Code: CodeTypeTransactionDecodingError,
 				Log:  fmt.Sprint("Not able to parse claim tokens transaction", "err", err),
-			}
+			}, err
 		}
 
 		deposit, exists := verifiedDeposits[claimTokensTx.TransactionHash]
 		if !exists {
 			// Does this also need a timestamp to check if it's not too recent?
-			return types.ResponseCheckTx{
+			return &types.ResponseCheckTx{
 				Code: CodeTypeDepositNotVerified,
 				Log:  fmt.Sprintf("Deposit is not confirmed by our xnode (attempted: %v)", claimTokensTx.TransactionHash),
-			}
+			}, errors.New("deposit is not confirmed by our xnode")
 		}
 
 		data := []byte("hello")
 		hash := eth.Keccak256Hash(data)
 		signerAddress, err := eth.Ecrecover(hash.Bytes(), []byte(claimTokensTx.Proof))
 		if err != nil || bytes.HexBytes(signerAddress).String() != deposit.Address {
-			return types.ResponseCheckTx{
+			return &types.ResponseCheckTx{
 				Code: CodeTypeDepositInvalidSignature,
 				Log:  fmt.Sprintf("Signature does not match depositer address, it should be signed by: %v", deposit.Address),
-			}
+			}, err
 		}
 
 	case TransactionWithdrawTokens:
 		withdrawTokensTx := &WithdrawTokensTx{}
-		err := json.Unmarshal(txBytes, withdrawTokensTx)
+		err := json.Unmarshal(check.Tx, withdrawTokensTx)
 		if err != nil {
-			return types.ResponseCheckTx{
+			return &types.ResponseCheckTx{
 				Code: CodeTypeTransactionDecodingError,
 				Log:  fmt.Sprint("Not able to parse withdraw tokens transaction", "err", err),
-			}
+			}, err
 		}
 
 		validator := app.Validators[withdrawTokensTx.ValidatorAddress]
-		if (withdrawTokensTx.Amount > validator.Tokens) {
-			return types.ResponseCheckTx{
+		if withdrawTokensTx.Amount > validator.Tokens {
+			return &types.ResponseCheckTx{
 				Code: CodeTypeNotEnoughUnstakedTokens,
 				Log:  fmt.Sprintf("Trying to stake more tokens than unstaked (attempted: %d, unstaked: %d)", withdrawTokensTx.Amount, validator.Tokens),
-			}
+			}, errors.New("trying to stake more tokens than unstaked")
 		}
 		// check proof
-		
+
 	}
 
-	return types.ResponseCheckTx{Code: CodeTypeOK}
+	return &types.ResponseCheckTx{Code: CodeTypeOK}, nil
 }
 
-func (app *Application) ExecuteTx(txBytes []byte) types.ResponseDeliverTx {
-	tx := &Transaction{}
-	err := json.Unmarshal(txBytes, tx)
-	if err != nil {
-		return types.ResponseDeliverTx{
-			Code: CodeTypeTransactionTypeDecodingError,
-			Log:  fmt.Sprint("Not able to parse transaction type", "err", err),
+func (app *Application) InitChain(_ context.Context, chain *types.RequestInitChain) (*types.ResponseInitChain, error) {
+	for i := 0; i < len(chain.Validators); i++ {
+		pk := ed25519.PubKey(chain.Validators[i].PubKey.GetEd25519())
+		app.Validators[pk.Address().String()] = AbciValidator{
+			PubKey:          pk,
+			GovernancePower: chain.Validators[i].Power,
+			Tokens:          0,
 		}
 	}
+	return &types.ResponseInitChain{}, nil
+}
 
-	events := make([]types.Event, 0)
-	switch (tx.TransactionType) {
-	case TransactionValidateData:
-		validateDataTx := &ValidateDataTx{}
-		err := json.Unmarshal(txBytes, validateDataTx)
-		if err != nil {
-			return types.ResponseDeliverTx{
-				Code: CodeTypeTransactionDecodingError,
-				Log:  fmt.Sprint("Not able to parse validate data transaction", "err", err),
+func (app *Application) FinalizeBlock(context context.Context, req *types.RequestFinalizeBlock) (*types.ResponseFinalizeBlock, error) {
+	// Process transactions
+	txs := make([]*types.ExecTxResult, len(req.Txs))
+	events := make([]types.Event, 0, len(req.Txs)) // Change if a proposal can have more than 1 event
+	for i := 0; i < len(req.Txs); i++ {
+		// Check again as state changes between mempool addition and process could have invalidated it
+		check, _ := app.CheckTx(context, &types.RequestCheckTx{Tx: req.Txs[i]})
+		if check.Code != CodeTypeOK {
+			txs[i] = &types.ExecTxResult{
+				Code: check.Code,
+				Log:  check.Log,
 			}
+			continue
 		}
-		
-		app.VerifiedData[validateDataTx.DataFeed] = VerifiedDataItem{Data: validateDataTx.DataValue, Timestamp: validateDataTx.DataTimestamp}
 
-		events = make([]types.Event, 1)
-		events[0] = types.Event{Type: "Data Verified", Attributes: make([]types.EventAttribute, 3)}
-		events[0].Attributes[0] = types.EventAttribute{Key: "feed", Value: fmt.Sprintf("%v", validateDataTx.DataFeed)}
-		events[0].Attributes[1] = types.EventAttribute{Key: "data", Value: fmt.Sprintf("%v", validateDataTx.DataValue)}
-		events[0].Attributes[2] = types.EventAttribute{Key: "timestamp", Value: fmt.Sprintf("%d", validateDataTx.DataTimestamp)}
-
-	case TransactionStakeTokens:
-		stakeTokensTx := &StakeTokensTx{}
-		err := json.Unmarshal(txBytes, stakeTokensTx)
+		tx := &Transaction{}
+		err := json.Unmarshal(req.Txs[i], tx)
 		if err != nil {
-			return types.ResponseDeliverTx{
+			txs[i] = &types.ExecTxResult{
 				Code: CodeTypeTransactionDecodingError,
-				Log:  fmt.Sprint("Not able to parse stake tokens transaction", "err", err),
+				Log:  check.Log,
 			}
+			continue
 		}
 
-		validator := app.Validators[stakeTokensTx.ValidatorAddress]
-
-		// Amount can be negative to unstake
-		validator.GovernancePower += stakeTokensTx.Amount
-		validator.Tokens -= stakeTokensTx.Amount
-
-		app.Validators[stakeTokensTx.ValidatorAddress] = validator
-
-		events = make([]types.Event, 1)
-		events[0] = types.Event{Type: "Tokens Staked", Attributes: make([]types.EventAttribute, 2)}
-		events[0].Attributes[0] = types.EventAttribute{Key: "validator", Value: fmt.Sprintf("%v", stakeTokensTx.ValidatorAddress)}
-		events[0].Attributes[1] = types.EventAttribute{Key: "amount", Value: fmt.Sprintf("%d", stakeTokensTx.Amount)}
-		// Do we want to include the proof in here too?
-
-	case TransactionClaimTokens:
-		claimTokensTx := &ClaimTokensTx{}
-		err := json.Unmarshal(txBytes, claimTokensTx)
-		if err != nil {
-			return types.ResponseDeliverTx{
-				Code: CodeTypeTransactionDecodingError,
-				Log:  fmt.Sprint("Not able to parse claim tokens transaction", "err", err),
+		switch tx.TransactionType {
+		case TransactionValidateData:
+			validateDataTx := &ValidateDataTx{}
+			err := json.Unmarshal(req.Txs[i], validateDataTx)
+			if err != nil {
+				txs[i] = &types.ExecTxResult{
+					Code: CodeTypeTransactionTypeDecodingError,
+					Log:  check.Log,
+				}
+				continue
 			}
-		}
 
-		validator := app.Validators[claimTokensTx.ValidatorAddress]
+			app.VerifiedData[validateDataTx.DataFeed] = VerifiedDataItem{Data: validateDataTx.DataValue, Timestamp: validateDataTx.DataTimestamp}
 
-		deposit := verifiedDeposits[claimTokensTx.TransactionHash]
-		validator.Tokens += deposit.Amount
-		delete(verifiedDeposits, claimTokensTx.TransactionHash) // Prevent deposit from being claimed again
+			event := types.Event{Type: "Data Verified", Attributes: make([]types.EventAttribute, 3)}
+			event.Attributes[0] = types.EventAttribute{Key: "feed", Value: fmt.Sprintf("%v", validateDataTx.DataFeed)}
+			event.Attributes[1] = types.EventAttribute{Key: "data", Value: fmt.Sprintf("%v", validateDataTx.DataValue)}
+			event.Attributes[2] = types.EventAttribute{Key: "timestamp", Value: fmt.Sprintf("%d", validateDataTx.DataTimestamp)}
+			events = append(events, event)
 
-		app.Validators[claimTokensTx.ValidatorAddress] = validator
-
-		events = make([]types.Event, 1)
-		events[0] = types.Event{Type: "Token Claimed", Attributes: make([]types.EventAttribute, 2)}
-		events[0].Attributes[0] = types.EventAttribute{Key: "validator", Value: fmt.Sprintf("%v", claimTokensTx.ValidatorAddress)}
-		events[0].Attributes[1] = types.EventAttribute{Key: "transactionhash", Value: fmt.Sprintf("%v", claimTokensTx.TransactionHash)}
-		// Do we want to include the proof in here too?
-		// Do we want to inlcude deposit info (you can check that on Ethereum with transaction hash tho)
-
-	case TransactionWithdrawTokens:
-		withdrawTokensTx := &WithdrawTokensTx{}
-		err := json.Unmarshal(txBytes, withdrawTokensTx)
-		if err != nil {
-			return types.ResponseDeliverTx{
-				Code: CodeTypeTransactionDecodingError,
-				Log:  fmt.Sprint("Not able to parse withdraw tokens transaction", "err", err),
+		case TransactionStakeTokens:
+			stakeTokensTx := &StakeTokensTx{}
+			err := json.Unmarshal(req.Txs[i], stakeTokensTx)
+			if err != nil {
+				txs[i] = &types.ExecTxResult{
+					Code: CodeTypeTransactionTypeDecodingError,
+					Log:  check.Log,
+				}
+				continue
 			}
+
+			validator := app.Validators[stakeTokensTx.ValidatorAddress]
+
+			// Amount can be negative to unstake
+			validator.GovernancePower += stakeTokensTx.Amount
+			validator.Tokens -= stakeTokensTx.Amount
+
+			// Only relevant if amount is negative
+			if validator.GovernancePower < minimumValidatorPower {
+				// If their GovernancePower is bellow the threshold, move all to tokens and give them GovernancePower 0
+				validator.Tokens += validator.GovernancePower
+				validator.GovernancePower = 0
+			}
+
+			app.Validators[stakeTokensTx.ValidatorAddress] = validator
+
+			event := types.Event{Type: "Tokens Staked", Attributes: make([]types.EventAttribute, 2)}
+			event.Attributes[0] = types.EventAttribute{Key: "validator", Value: fmt.Sprintf("%v", stakeTokensTx.ValidatorAddress)}
+			event.Attributes[1] = types.EventAttribute{Key: "amount", Value: fmt.Sprintf("%d", stakeTokensTx.Amount)}
+			events = append(events, event)
+			// Do we want to include the proof in here too?
+
+		case TransactionClaimTokens:
+			claimTokensTx := &ClaimTokensTx{}
+			err := json.Unmarshal(req.Txs[i], claimTokensTx)
+			if err != nil {
+				txs[i] = &types.ExecTxResult{
+					Code: CodeTypeTransactionTypeDecodingError,
+					Log:  check.Log,
+				}
+				continue
+			}
+
+			validator := app.Validators[claimTokensTx.ValidatorAddress]
+
+			deposit := verifiedDeposits[claimTokensTx.TransactionHash]
+			validator.Tokens += deposit.Amount
+			delete(verifiedDeposits, claimTokensTx.TransactionHash) // Prevent deposit from being claimed again
+
+			app.Validators[claimTokensTx.ValidatorAddress] = validator
+
+			event := types.Event{Type: "Token Claimed", Attributes: make([]types.EventAttribute, 2)}
+			event.Attributes[0] = types.EventAttribute{Key: "validator", Value: fmt.Sprintf("%v", claimTokensTx.ValidatorAddress)}
+			event.Attributes[1] = types.EventAttribute{Key: "transactionhash", Value: fmt.Sprintf("%v", claimTokensTx.TransactionHash)}
+			events = append(events, event)
+			// Do we want to include the proof in here too?
+			// Do we want to inlcude deposit info (you can check that on Ethereum with transaction hash tho)
+
+		case TransactionWithdrawTokens:
+			withdrawTokensTx := &WithdrawTokensTx{}
+			err := json.Unmarshal(req.Txs[i], withdrawTokensTx)
+			if err != nil {
+				txs[i] = &types.ExecTxResult{
+					Code: check.Code,
+					Log:  check.Log,
+				}
+				continue
+			}
+
+			validator := app.Validators[withdrawTokensTx.ValidatorAddress]
+
+			validator.Tokens -= withdrawTokensTx.Amount
+
+			app.Validators[withdrawTokensTx.ValidatorAddress] = validator
+
+			event := types.Event{Type: "Tokens Withdrawn", Attributes: make([]types.EventAttribute, 2)}
+			event.Attributes[0] = types.EventAttribute{Key: "validator", Value: fmt.Sprintf("%v", withdrawTokensTx.ValidatorAddress)}
+			event.Attributes[1] = types.EventAttribute{Key: "amount", Value: fmt.Sprintf("%d", withdrawTokensTx.Amount)}
+			events = append(events, event)
+			// Do we want to include the proof in here too?
+
 		}
 
-		validator := app.Validators[withdrawTokensTx.ValidatorAddress]
-
-		validator.Tokens -= withdrawTokensTx.Amount
-
-		app.Validators[withdrawTokensTx.ValidatorAddress] = validator
-
-		events = make([]types.Event, 1)
-		events[0] = types.Event{Type: "Tokens Withdrawn", Attributes: make([]types.EventAttribute, 2)}
-		events[0].Attributes[0] = types.EventAttribute{Key: "validator", Value: fmt.Sprintf("%v", withdrawTokensTx.ValidatorAddress)}
-		events[0].Attributes[1] = types.EventAttribute{Key: "amount", Value: fmt.Sprintf("%d", withdrawTokensTx.Amount)}
-		// Do we want to include the proof in here too?
-
+		app.TotalTransactions++
+		txs[i] = &types.ExecTxResult{Code: CodeTypeOK}
 	}
 
-	return types.ResponseDeliverTx{Code: CodeTypeOK, Events: events}
-}
-
-func (app *Application) DeliverTx(req types.RequestDeliverTx) types.ResponseDeliverTx {
-	// Not sure if this check if required or if the tendermint node handles this for us
-	// In the counter example application the check is also in here
-	check := app.ValidateTx(req.Tx)
-	if (check.Code != 0) {
-		return types.ResponseDeliverTx{
-			Code: check.Code,
-			Log: check.Log,
-		}
-	}
-
-	app.totalTransactions++
-	return app.ExecuteTx(req.Tx)
-}
-
-func (app *Application) CheckTx(req types.RequestCheckTx) types.ResponseCheckTx {
-	return app.ValidateTx(req.Tx)
-}
-
-func (app *Application) Commit() (resp types.ResponseCommit) {
-	if app.totalTransactions == 0 {
-		return types.ResponseCommit{}
-	}
-	hash := make([]byte, 8)
-	binary.BigEndian.PutUint64(hash, uint64(app.totalTransactions))
-	return types.ResponseCommit{Data: hash}
-}
-
-func (app *Application) Query(reqQuery types.RequestQuery) types.ResponseQuery {
-	switch reqQuery.Path {
-	case "tx":
-		return types.ResponseQuery{Value: []byte(fmt.Sprintf("%v", app.totalTransactions))}
-	default:
-		return types.ResponseQuery{Log: fmt.Sprintf("Invalid query path. Expected price, time or tx, got %v", reqQuery.Path)}
-	}
-}
-
-func (app *Application) BeginBlock(req types.RequestBeginBlock) types.ResponseBeginBlock {
+	// Calculate block rewards (lagging behind 1 block, cannot know already who votes on this block obviously)
 	// This assumes all punished validators are still validating though!
-	app.PendingBlockRewards = make([]types.ValidatorUpdate, len(req.LastCommitInfo.Votes) + len(req.ByzantineValidators))
-	for i := 0; i < len(req.LastCommitInfo.Votes); i++ {
-		address := bytes.HexBytes(req.LastCommitInfo.Votes[i].Validator.Address).String()
+	blockRewards := make([]types.ValidatorUpdate, len(req.DecidedLastCommit.Votes)+len(req.Misbehavior))
+	for i := 0; i < len(req.DecidedLastCommit.Votes); i++ {
+		address := bytes.HexBytes(req.DecidedLastCommit.Votes[i].Validator.Address).String()
 		validator := app.Validators[address]
 
 		validator.GovernancePower += validator.GovernancePower / 10000
-		app.PendingBlockRewards[i] = types.Ed25519ValidatorUpdate(validator.PubKey.Bytes(), validator.GovernancePower)
+		blockRewards[i] = types.Ed25519ValidatorUpdate(validator.PubKey.Bytes(), validator.GovernancePower)
 
 		app.Validators[address] = validator
 	}
-	for i := 0; i < len(req.ByzantineValidators); i++ {
-		address := bytes.HexBytes(req.ByzantineValidators[i].Validator.Address).String()
+	for i := 0; i < len(req.Misbehavior); i++ {
+		address := bytes.HexBytes(req.Misbehavior[i].Validator.Address).String()
 		validator := app.Validators[address]
 
 		// Can a validator withdraw their governance power before the evidence against their actions is finalized to prevent punishment?
 		validator.GovernancePower -= validator.GovernancePower / 100
-		if (validator.GovernancePower < 10_000 * 10^9) {
+		if validator.GovernancePower < minimumValidatorPower {
 			// If their GovernancePower is bellow the threshold, move all to tokens and give them GovernancePower 0
-			validator.Tokens += validator.GovernancePower;
-			validator.GovernancePower = 0;
+			validator.Tokens += validator.GovernancePower
+			validator.GovernancePower = 0
 		}
-		app.PendingBlockRewards[len(req.LastCommitInfo.Votes)+i] = types.Ed25519ValidatorUpdate(validator.PubKey.Bytes(), validator.GovernancePower)
+		blockRewards[len(req.DecidedLastCommit.Votes)+i] = types.Ed25519ValidatorUpdate(validator.PubKey.Bytes(), validator.GovernancePower)
 
 		app.Validators[address] = validator
 	}
-	return types.ResponseBeginBlock{}
-}
-
-func (app *Application) EndBlock(req types.RequestEndBlock) types.ResponseEndBlock {
-	return types.ResponseEndBlock{ValidatorUpdates: app.PendingBlockRewards}
+	return &types.ResponseFinalizeBlock{TxResults: txs, ValidatorUpdates: blockRewards, Events: events}, nil
 }

@@ -1,6 +1,3 @@
-[submodule "tendermint"]
-	path = tendermint
-	url = https://github.com/Plopmenz/tendermint.git
-[submodule "smart-contracts/hello_foundry/lib/forge-std"]
-	path = smart-contracts/hello_foundry/lib/forge-std
-	url = https://github.com/foundry-rs/forge-std
+[submodule "cometbft"]
+	path = cometbft
+	url = https://github.com/cometbft/cometbft.git

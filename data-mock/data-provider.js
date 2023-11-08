@@ -3,8 +3,7 @@ const axios = require("axios");
 const { createPublicClient, http, parseAbi } = require("viem");
 const { polygonMumbai } = require("viem/chains");
 
-const abciAddress = process.argv[2];
-const rpcAddress = process.argv[3];
+const nodeAddress = process.argv[2];
 const lastPrice = {};
 const lastTimestamp = {};
 
@@ -14,7 +13,7 @@ setTimeout(start, 2000); // Wait for the tendermint node and abci to start up an
 function start() {
   const binanceBTCUSDT = new WebSocket("wss://data-stream.binance.vision/ws/btcusdt@aggTrade");
   const binanceETHUSDT = new WebSocket("wss://data-stream.binance.vision/ws/ethusdt@aggTrade");
-  abci = new WebSocket("ws://" + abciAddress + ":8088");
+  abci = new WebSocket("ws://" + nodeAddress + ":8088");
 
   abci.on("open", () => {
     console.log("ABCI connected!");
@@ -58,7 +57,7 @@ function start() {
         DepositInfo: {
           Address: account,
           // Send over amount in 2 integers? Doing this here is a bit unintuative (but doing in the app reduces precision)
-          Amount: Number((amount / BigInt(10)) ^ BigInt(9)), // Risky!)
+          Amount: Number((amount / BigInt(10)) ^ BigInt(9)), // Risky!
         },
       });
       const message = [...Buffer.from(json)];
@@ -100,7 +99,7 @@ function handleMessage(data) {
 
       // Some algorithm to decide which node should make transactions should be put in place here
       // Two nodes generating the same transaction is no problem, just a possible waste of bandwith
-      if (abciAddress == "192.167.10.6") {
+      if (nodeAddress == "192.166.10.2") {
         setTimeout(async () => {
           const json = JSON.stringify({
             TransactionType: 0, // Try to reach consensus on data
@@ -109,10 +108,11 @@ function handleMessage(data) {
             DataTimestamp: timestamp,
           });
           const tx = [...Buffer.from(json)];
-          const url = rpcAddress + "/broadcast_tx_async?tx=0x" + toHexString(tx);
+          const url = "http://" + nodeAddress + ":26657/broadcast_tx_sync?tx=0x" + toHexString(tx);
           try {
             console.log("trying transaction", url, `(${price} at ${timestamp})`);
-            await axios.request(url);
+            const data = await axios.request(url);
+            console.log("transcation response:", data.data);
           } catch (err) {
             console.error(err?.response?.data ?? err);
           }
