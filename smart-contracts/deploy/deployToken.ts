@@ -1,6 +1,6 @@
 import { HardhatRuntimeEnvironment } from "hardhat/types";
 import { DeployFunction } from "hardhat-deploy/types";
-import { admin, erc20Name, erc20Ticker, maxSupply } from "../settings";
+import { erc20admin, erc20Name, erc20Ticker, maxSupply } from "../settings";
 
 const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   const { deployments, getNamedAccounts } = hre;
@@ -8,7 +8,7 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
 
   await deployments.deploy("OPEN", {
     from: deployer,
-    args: [erc20Name, erc20Ticker, maxSupply, admin],
+    args: [erc20Name, erc20Ticker, maxSupply, erc20admin],
   });
 };
 export default func;

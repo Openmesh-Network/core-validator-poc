@@ -1,7 +1,7 @@
 # Dependencies
 
 https://go.dev/doc/install (to build tendermint)  
-https://docs.docker.com/engine/install/ (to run the abci app and the tendermint nodes)  
+https://docs.docker.com/engine/install/ (to run the abci app and the tendermint nodes)
 
 # Development
 
@@ -41,6 +41,10 @@ curl http://localhost:26657/broadcast_tx_commit?tx=0x00
 curl http://localhost:26657/abci_info
 ```
 
-### Tendermint rpc docs
+### CometBFT rpc docs
 
-https://docs.tendermint.com/v0.34/rpc/#/
+https://docs.cometbft.com/v0.38/rpc/#/
+
+### CometBFT general docs
+
+https://docs.cometbft.com/v0.38/

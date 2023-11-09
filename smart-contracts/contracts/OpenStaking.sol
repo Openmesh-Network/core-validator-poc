@@ -2,15 +2,23 @@
 pragma solidity ^0.8.0;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 import {IERC20MintBurnable} from "./IERC20MintBurnable.sol";
 import {IOpenStaking} from "./IOpenStaking.sol";
 
-contract OpenStaking is Ownable, IOpenStaking {
+contract OpenStaking is Ownable, EIP712, IOpenStaking {
     IERC20MintBurnable private immutable token;
-    mapping(address => uint256) private withdrawable;
+    mapping(address => uint256) private withdrawNonce;
 
-    constructor(IERC20MintBurnable _token, address _admin) Ownable(_admin) {
+    bytes32 private constant WITHDRAW_TYPEHASH =
+        keccak256("Withdraw(address withdrawer,uint256 nonce,uint256 amount)");
+
+    constructor(
+        IERC20MintBurnable _token,
+        address _admin
+    ) Ownable(_admin) EIP712("OpenStaking", "1") {
         token = _token;
     }
 
@@ -22,33 +30,38 @@ contract OpenStaking is Ownable, IOpenStaking {
     }
 
     /// @inheritdoc IOpenStaking
-    function withdraw(uint256 _amount) external {
-        if (_amount > withdrawable[msg.sender]) {
-            revert NotEnoughWithdrawableTokens();
+    function withdraw(
+        uint8 _v,
+        bytes32 _r,
+        bytes32 _s,
+        address _withdrawer,
+        uint256 _amount
+    ) external {
+        address signer = ECDSA.recover(
+            _hashTypedDataV4(
+                keccak256(
+                    abi.encode(
+                        WITHDRAW_TYPEHASH,
+                        _withdrawer,
+                        withdrawNonce[_withdrawer],
+                        _amount
+                    )
+                )
+            ),
+            _v,
+            _r,
+            _s
+        );
+        if (signer != owner()) {
+            revert InvalidProof();
         }
 
-        token.mint(msg.sender, _amount);
-        emit TokensWithdrawn(msg.sender, _amount);
+        token.mint(_withdrawer, _amount);
+        emit TokensWithdrawn(_withdrawer, _amount);
+        withdrawNonce[_withdrawer]++;
     }
 
-    // CHANGE TO PROOF BASED (user pays gas fee) ?
-    // (Address (prevent frontrun), amount, nonce (prevent replay)) ?
-    // Proof would be built into withdraw function directly, no need for the mapping anymore
-    function addWithdrawable(
-        address[] calldata _accounts,
-        uint256[] calldata _amounts
-    ) external onlyOwner {
-        if (_accounts.length != _amounts.length) {
-            revert ArraysAreNotEqualLength();
-        }
-
-        for (uint i; i < _accounts.length; ) {
-            withdrawable[_accounts[i]] += _amounts[i];
-            emit TokensWithdrawable(_accounts[i], _amounts[i]);
-
-            unchecked {
-                ++i;
-            }
-        }
+    function getNonce(address _account) external view returns (uint256 nonce) {
+        nonce = withdrawNonce[_account];
     }
 }

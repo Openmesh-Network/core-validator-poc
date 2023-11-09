@@ -1,6 +1,6 @@
 import { HardhatRuntimeEnvironment } from "hardhat/types";
 import { DeployFunction } from "hardhat-deploy/types";
-import { admin } from "../settings";
+import { stakingSigner } from "../settings";
 
 const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   const { deployments, getNamedAccounts } = hre;
@@ -10,7 +10,7 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
 
   await deployments.deploy("OpenStaking", {
     from: deployer,
-    args: [token, admin],
+    args: [token, stakingSigner],
   });
 };
 export default func;
