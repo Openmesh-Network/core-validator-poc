@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -41,6 +42,7 @@ const (
 
 	CodeTypeNotEnoughStakedTokens   uint32 = 20
 	CodeTypeNotEnoughUnstakedTokens uint32 = 21
+	CodeTypeInvalidSingature        uint32 = 22
 
 	CodeTypeDepositNotVerified      uint32 = 30
 	CodeTypeDepositInvalidSignature uint32 = 31
@@ -52,7 +54,8 @@ type AbciValidator struct {
 	PubKey          crypto.PubKey
 	GovernancePower int64 // Staked tokens, can be unstaked
 	// Tokens has 9 decimals (so * 10^9 to convert to blockchain tokens, / 10*9 to convert to blockchain coins)
-	Tokens int64 // Unstaked tokens, can be withdrawn or staked
+	Tokens int64  // Unstaked tokens, can be withdrawn or staked
+	Nonce  uint32 // To prevent replay attacks
 }
 
 type VerifiedDataItem struct {
@@ -93,7 +96,7 @@ type ValidateDataTx struct {
 type StakeTokensTx struct {
 	Amount           int64 // Negative amount to unstake
 	ValidatorAddress string
-	Proof            string
+	Proof            string // "Stake" + Amount (hex) + Nonce (hex)
 }
 
 // Claim tokens by providing ethereum transaction hash, proof is from the ethereum address that deposited their tokens
@@ -108,7 +111,7 @@ type WithdrawTokensTx struct {
 	Amount           int64
 	Address          string
 	ValidatorAddress string
-	Proof            string
+	Proof            string // "Withdraw" + Amount (hex) + Address + None (hex)
 }
 
 // Xnode
@@ -174,7 +177,7 @@ func receiveXnodeData(w http.ResponseWriter, r *http.Request) {
 			}
 
 			verifiedXnodeData[xnodeData.DataFeed][xnodeData.DataTimestamp] = xnodeData.DataValue
-			//logger.Info(fmt.Sprintf("Verified %v added: %v at %d", xnodeData.DataFeed, xnodeData.DataValue, xnodeData.DataTimestamp))
+			log.Printf("Verified %v added: %v at %d", xnodeData.DataFeed, xnodeData.DataValue, xnodeData.DataTimestamp)
 		case XnodeMessageDeposit:
 			xnodeDeposit := &XnodeDepositMessage{}
 			err = json.Unmarshal(message, xnodeDeposit)
@@ -183,7 +186,7 @@ func receiveXnodeData(w http.ResponseWriter, r *http.Request) {
 			}
 
 			verifiedDeposits[xnodeDeposit.TransactionHash] = xnodeDeposit.DepositInfo
-			//logger.Info(fmt.Sprintf("Verified deposit %v added: (%d from %v)", xnodeDeposit.TransactionHash, xnodeDeposit.DepositInfo.Amount, xnodeDeposit.DepositInfo.Address))
+			log.Printf("Verified deposit %v added: (%d from %v)", xnodeDeposit.TransactionHash, xnodeDeposit.DepositInfo.Amount, xnodeDeposit.DepositInfo.Address)
 		}
 
 	}
@@ -395,7 +398,32 @@ func (app *Application) CheckTx(_ context.Context, check *types.RequestCheckTx) 
 				Log:  fmt.Sprintf("Trying to unstake more tokens than staked (attemped: %d, staked: %d)", -stakeTokensTx.Amount, validator.GovernancePower),
 			}, errors.New("trying to unstake more tokens than staked")
 		}
-		// check proof
+
+		verifier := ed25519.NewBatchVerifier()
+		hasher := sha256.New()
+		// We can also calculate the byte arrays more efficiently (e.g. using binary.LittleEndian) and write them seperately
+		// However this significantly increases code cluther with the convertion process and error handling
+		_, err = hasher.Write([]byte("Stake" + fmt.Sprintf("%#x", stakeTokensTx.Amount) + fmt.Sprintf("%#x", (validator.Nonce))))
+		if err != nil {
+			return &types.ResponseCheckTx{
+				Code: CodeTypeInvalidSingature,
+				Log:  "Error hashing data for proof validation",
+			}, err
+		}
+		err = verifier.Add(validator.PubKey, hasher.Sum(nil), []byte(stakeTokensTx.Proof))
+		if err != nil {
+			return &types.ResponseCheckTx{
+				Code: CodeTypeInvalidSingature,
+				Log:  "Error verifying proof",
+			}, err
+		}
+		valid, _ := verifier.Verify()
+		if !valid {
+			return &types.ResponseCheckTx{
+				Code: CodeTypeInvalidSingature,
+				Log:  "Proof is not valid",
+			}, err
+		}
 
 	case TransactionClaimTokens:
 		claimTokensTx := &ClaimTokensTx{}
@@ -443,7 +471,30 @@ func (app *Application) CheckTx(_ context.Context, check *types.RequestCheckTx) 
 				Log:  fmt.Sprintf("Trying to stake more tokens than unstaked (attempted: %d, unstaked: %d)", withdrawTokensTx.Amount, validator.Tokens),
 			}, errors.New("trying to stake more tokens than unstaked")
 		}
-		// check proof
+
+		verifier := ed25519.NewBatchVerifier()
+		hasher := sha256.New()
+		_, err = hasher.Write([]byte("Withdraw" + fmt.Sprintf("%#x", withdrawTokensTx.Amount) + withdrawTokensTx.Address + fmt.Sprintf("%#x", (validator.Nonce))))
+		if err != nil {
+			return &types.ResponseCheckTx{
+				Code: CodeTypeInvalidSingature,
+				Log:  "Error hashing data for proof validation",
+			}, err
+		}
+		err = verifier.Add(validator.PubKey, hasher.Sum(nil), []byte(withdrawTokensTx.Proof))
+		if err != nil {
+			return &types.ResponseCheckTx{
+				Code: CodeTypeInvalidSingature,
+				Log:  "Error verifying proof",
+			}, err
+		}
+		valid, _ := verifier.Verify()
+		if !valid {
+			return &types.ResponseCheckTx{
+				Code: CodeTypeInvalidSingature,
+				Log:  "Proof is not valid",
+			}, err
+		}
 
 	}
 
@@ -531,6 +582,8 @@ func (app *Application) FinalizeBlock(context context.Context, req *types.Reques
 				validator.GovernancePower = 0
 			}
 
+			validator.Nonce++
+
 			app.Validators[stakeTokensTx.ValidatorAddress] = validator
 
 			event := types.Event{Type: "Tokens Staked", Attributes: make([]types.EventAttribute, 2)}
@@ -579,6 +632,8 @@ func (app *Application) FinalizeBlock(context context.Context, req *types.Reques
 			validator := app.Validators[withdrawTokensTx.ValidatorAddress]
 
 			validator.Tokens -= withdrawTokensTx.Amount
+
+			validator.Nonce++
 
 			app.Validators[withdrawTokensTx.ValidatorAddress] = validator
 
