@@ -37,7 +37,7 @@ function start() {
     transport: http(),
   });
   const openstaking = {
-    address: "0x57ef7d9BB8532E7E4179dC2ce9097783470c4833",
+    address: "0xB88E40E8289665EE3e7493753d79D5C0606F384C", // OpenStaking contract address
     abi: parseAbi(["event TokensStaked(address indexed account, uint256 amount)"]),
   };
   client.watchContractEvent({
@@ -51,26 +51,56 @@ function start() {
 
       console.log(account, "staked", amount);
 
-      const json = JSON.stringify({
-        MessageType: 1, // Add verified deposit
-        TransactionHash: transactionHash,
-        DepositInfo: {
-          Address: account,
-          // Send over amount in 2 integers? Doing this here is a bit unintuative (but doing in the app reduces precision)
-          Amount: Number((amount / BigInt(10)) ^ BigInt(9)), // Risky!
-        },
-      });
-      const message = [...Buffer.from(json)];
-      abci.send(message, (err) => {
-        if (err) {
-          console.error("deposit communcication error", err);
-          return;
-        }
-      });
+      handleStake(transactionHash, account, amount);
     },
     onError: (error) => {
-      console.error("Contract watch error", error);
+      console.error("OpenStaking watch error", error);
     },
+  });
+
+  // Early birds
+  const validatorpassstaking = {
+    address: "0xeeFbA1882Bc5d0775002b0618C051a0B052EE6dE", // ValidatorPass ERC721 contract address
+    abi: parseAbi(["event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)"]),
+  };
+  client.watchContractEvent({
+    ...validatorpassstaking,
+    eventName: "Transfer",
+    args: { from: "0x0000000000000000000000000000000000000000" },
+    onLogs: (logs) => {
+      const {
+        transactionHash,
+        args: { to },
+      } = logs[0];
+      const account = to;
+      const amount = BigInt(10_000) * (BigInt(10) ^ BigInt(18));
+
+      console.log(account, "early staked", amount);
+
+      handleStake(transactionHash, account, amount);
+    },
+    onError: (error) => {
+      console.error("ValidatorPass watch error", error);
+    },
+  });
+}
+
+function handleStake(transactionHash, account, amount) {
+  const json = JSON.stringify({
+    MessageType: 1, // Add verified deposit
+    TransactionHash: transactionHash,
+    DepositInfo: {
+      Address: account,
+      // Send over amount in 2 integers? Doing this here is a bit unintuative (but doing in the app reduces precision)
+      Amount: Number(amount / (BigInt(10) ^ BigInt(9))), // Risky!
+    },
+  });
+  const message = [...Buffer.from(json)];
+  abci.send(message, (err) => {
+    if (err) {
+      console.error("deposit communcication error", err);
+      return;
+    }
   });
 }
 

@@ -3,7 +3,7 @@ export default {
   "chainId": "80001",
   "contracts": {
     "OPEN": {
-      "address": "0x340E7B68B20C004Be6579D165b40950c60464570",
+      "address": "0xD8076a366012d402D7699dd24c3Ae744cc6E6E90",
       "abi": [
         {
           "inputs": [
@@ -1075,7 +1075,7 @@ export default {
       ]
     },
     "OpenStaking": {
-      "address": "0x57ef7d9BB8532E7E4179dC2ce9097783470c4833",
+      "address": "0xB88E40E8289665EE3e7493753d79D5C0606F384C",
       "abi": [
         {
           "inputs": [
@@ -1095,12 +1095,39 @@ export default {
         },
         {
           "inputs": [],
-          "name": "ArraysAreNotEqualLength",
+          "name": "ECDSAInvalidSignature",
+          "type": "error"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "uint256",
+              "name": "length",
+              "type": "uint256"
+            }
+          ],
+          "name": "ECDSAInvalidSignatureLength",
+          "type": "error"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "bytes32",
+              "name": "s",
+              "type": "bytes32"
+            }
+          ],
+          "name": "ECDSAInvalidSignatureS",
           "type": "error"
         },
         {
           "inputs": [],
-          "name": "NotEnoughWithdrawableTokens",
+          "name": "InvalidProof",
+          "type": "error"
+        },
+        {
+          "inputs": [],
+          "name": "InvalidShortString",
           "type": "error"
         },
         {
@@ -1124,6 +1151,23 @@ export default {
           ],
           "name": "OwnableUnauthorizedAccount",
           "type": "error"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "string",
+              "name": "str",
+              "type": "string"
+            }
+          ],
+          "name": "StringTooLong",
+          "type": "error"
+        },
+        {
+          "anonymous": false,
+          "inputs": [],
+          "name": "EIP712DomainChanged",
+          "type": "event"
         },
         {
           "anonymous": false,
@@ -1150,7 +1194,7 @@ export default {
             {
               "indexed": true,
               "internalType": "address",
-              "name": "acount",
+              "name": "account",
               "type": "address"
             },
             {
@@ -1169,7 +1213,7 @@ export default {
             {
               "indexed": true,
               "internalType": "address",
-              "name": "acount",
+              "name": "account",
               "type": "address"
             },
             {
@@ -1188,7 +1232,7 @@ export default {
             {
               "indexed": true,
               "internalType": "address",
-              "name": "acount",
+              "name": "account",
               "type": "address"
             },
             {
@@ -1202,21 +1246,65 @@ export default {
           "type": "event"
         },
         {
-          "inputs": [
+          "inputs": [],
+          "name": "eip712Domain",
+          "outputs": [
             {
-              "internalType": "address[]",
-              "name": "_accounts",
-              "type": "address[]"
+              "internalType": "bytes1",
+              "name": "fields",
+              "type": "bytes1"
+            },
+            {
+              "internalType": "string",
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "internalType": "string",
+              "name": "version",
+              "type": "string"
+            },
+            {
+              "internalType": "uint256",
+              "name": "chainId",
+              "type": "uint256"
+            },
+            {
+              "internalType": "address",
+              "name": "verifyingContract",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "salt",
+              "type": "bytes32"
             },
             {
               "internalType": "uint256[]",
-              "name": "_amounts",
+              "name": "extensions",
               "type": "uint256[]"
             }
           ],
-          "name": "addWithdrawable",
-          "outputs": [],
-          "stateMutability": "nonpayable",
+          "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "address",
+              "name": "_account",
+              "type": "address"
+            }
+          ],
+          "name": "getNonce",
+          "outputs": [
+            {
+              "internalType": "uint256",
+              "name": "nonce",
+              "type": "uint256"
+            }
+          ],
+          "stateMutability": "view",
           "type": "function"
         },
         {
@@ -1267,6 +1355,26 @@ export default {
         },
         {
           "inputs": [
+            {
+              "internalType": "uint8",
+              "name": "_v",
+              "type": "uint8"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "_r",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "_s",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "address",
+              "name": "_withdrawer",
+              "type": "address"
+            },
             {
               "internalType": "uint256",
               "name": "_amount",
