@@ -73,7 +73,7 @@ function start() {
         args: { to },
       } = logs[0];
       const account = to;
-      const amount = BigInt(10_000) * (BigInt(10) ^ BigInt(18));
+      const amount = BigInt(10_000) * BigInt(10) ** BigInt(18);
 
       console.log(account, "early staked", amount);
 
@@ -92,7 +92,7 @@ function handleStake(transactionHash, account, amount) {
     DepositInfo: {
       Address: account,
       // Send over amount in 2 integers? Doing this here is a bit unintuative (but doing in the app reduces precision)
-      Amount: Number(amount / (BigInt(10) ^ BigInt(9))), // Risky!
+      Amount: Number(amount / BigInt(10) ** BigInt(9)), // Risky!
     },
   });
   const message = [...Buffer.from(json)];
