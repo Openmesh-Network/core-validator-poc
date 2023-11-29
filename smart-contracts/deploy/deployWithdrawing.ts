@@ -8,11 +8,11 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
 
   const token = (await deployments.get("OPEN")).address;
 
-  await deployments.deploy("OpenStaking", {
+  await deployments.deploy("OpenWithdrawing", {
     from: deployer,
     args: [token, stakingSigner],
   });
 };
 export default func;
-func.tags = ["OpenStaking"];
+func.tags = ["OpenWithdrawing"];
 func.dependencies = ["OPEN"];

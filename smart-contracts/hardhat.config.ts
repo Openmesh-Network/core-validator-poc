@@ -10,7 +10,7 @@ const fakePrivKey = "00000000000000000000000000000000000000000000000000000000000
 
 const config: HardhatUserConfig = {
   solidity: {
-    version: "0.8.21",
+    version: "0.8.23",
     settings: {
       optimizer: {
         enabled: true,
@@ -34,6 +34,15 @@ const config: HardhatUserConfig = {
       verify: {
         etherscan: {
           apiKey: process.env.X_POLYGONSCAN_API_KEY ?? "",
+        },
+      },
+    },
+    sepolia: {
+      accounts: [process.env.PRIV_KEY ?? fakePrivKey],
+      url: process.env.RPC_SEPOLIA ?? "https://rpc.ankr.com/eth_sepolia",
+      verify: {
+        etherscan: {
+          apiKey: process.env.X_ETHERSCAN_API_KEY ?? "",
         },
       },
     },

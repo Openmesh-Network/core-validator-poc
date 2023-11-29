@@ -1,6 +1,7 @@
 {
   "scripts": {
-    "test": "npx hardhat test"
+    "test": "npx hardhat test",
+    "sign": "npx hardhat run ./scripts/signWithdraw.ts --network sepolia"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^3.0.0",
