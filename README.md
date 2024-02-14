@@ -1,50 +1,48 @@
-# Dependencies
+# XNode Validator Proof of Concept 
 
-https://go.dev/doc/install (to build tendermint)  
-https://docs.docker.com/engine/install/ (to run the abci app and the tendermint nodes)
+This project implements a proof of stake blockchain that validates mock exchange transactions.
 
-# Development
+## Dependencies
+- Make
+- Docker (Make sure you've got docker permissions on your machine)
+- Go compiler
+- Npm
 
-It is recommended to open the xnode-app folder in your preferred editor for GO projects. Opening this root folder instead might give errors in your IDE that its an invalid GO project.
+## Libraries
+- CommetBFT
+  - See general docs [here](https://docs.cometbft.com/v0.38/)
+  - See RPC docs [here](https://docs.cometbft.com/v0.38/rpc/#/) you can use them to get more info on the system.
 
-# Commands
+## Project layout
+- `xnode-app` has the go program that runs the validator node logic
+- `data-mock` has a simple JS server that mocks live transactions
+- `smart-contracts` stores initial implementation of smart contracts that bridge ETH and OPEN chains 
 
-## Once:
+## How to run
+1. Install dependencies `make install` (only needs to be done once)
+2. Build with `make build`
+3. Run the actual program `make run`
 
-```
-make install
-```
-
-## To update:
-
-```
-sudo make update
-```
-
-## To start:
-
-```
-sudo make start
-```
-
-## While running
-
-### Send a transaction
-
+## Usage
+Send a transaction:
 ```
 curl http://localhost:26657/broadcast_tx_commit?tx=0x00
 ```
 
-### Get current state
-
+Get state of system:
 ```
 curl http://localhost:26657/abci_info
 ```
 
-### CometBFT rpc docs
+For more actions check out the CommetBFT rpc docs [here](https://docs.cometbft.com/v0.38/rpc/#/).
 
-https://docs.cometbft.com/v0.38/rpc/#/
+## Get up to speed
 
-### CometBFT general docs
+If you want to look at the code, we recommend opening the xnode-app folder in your IDE.
+Opening up this folder instead might break the Go linting.
 
-https://docs.cometbft.com/v0.38/
+### CommetBFT / PoS Blockchain
+
+### Bridging
+
+### 
