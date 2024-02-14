@@ -2,7 +2,7 @@ install:
 	make --directory=./cometbft build
 .PHONY: install
 
-update:
+build:
 	docker build --tag tendermint-app ./xnode-app
 	docker build --tag xnode ./data-mock
 	rm -rf ./cometbft/build/node*
@@ -12,9 +12,9 @@ update:
 	find ./cometbft/build/node*/config/config.toml | xargs sed -i 's/create_empty_blocks = true/create_empty_blocks = false/g'
 	find ./cometbft/build/node*/config/config.toml | xargs sed -i 's/send_rate = 5120000/send_rate = 5120000000/g'
 	find ./cometbft/build/node*/config/config.toml | xargs sed -i 's/recv_rate = 5120000/recv_rate = 5120000000/g'
-.PHONY: update
+.PHONY: build
 
-start:
+run:
 	docker compose -f ./docker-compose.yml up
-.PHONY: start
+.PHONY: run
 
