@@ -1,4 +1,4 @@
-# Xnode Validator Proof of Concept 
+# Openmesh Core Validator Proof of Concept 
 
 This project implements a proof of stake blockchain that validates mock exchange transactions.
 
