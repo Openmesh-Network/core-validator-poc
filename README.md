@@ -1,4 +1,4 @@
-# XNode Validator Proof of Concept 
+# Xnode Validator Proof of Concept 
 
 This project implements a proof of stake blockchain that validates mock exchange transactions.
 
